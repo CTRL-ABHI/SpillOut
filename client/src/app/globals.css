@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --scrollbar-thumb: #DEDEDE;
+  --scrollbar-track: #FAFAFA;
+  --accent-color: #111111;
+}
+
+body {
+  background-color: #FFFFFF;
+  color: #111111;
+  overflow-x: hidden;
+  accent-color: var(--accent-color);
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+
+::selection {
+  background-color: #111111;
+  color: #FFFFFF;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: #FAFAFA;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #DEDEDE;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #BDBDBD;
+}
+
+/* Subtle focus styles */
+:focus-visible {
+  outline: 2px solid #111111;
+  outline-offset: 2px;
+}
+
+/* Sketch border utilities */
+.border-sketch {
+  border-width: 1.5px;
+  border-color: #111111;
+}
+
+.border-sketch-subtle {
+  border-width: 1px;
+  border-color: #DEDEDE;
+}
+
+/* Hand-drawn style decorative outlines */
+.sketch-pill {
+  border: 1.5px solid #111111;
+  box-shadow: 2px 2px 0px 0px #111111;
+}
+
+.sketch-pill:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0px 0px #111111;
+}
+
+.sketch-pill:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0px 0px #111111;
+}
