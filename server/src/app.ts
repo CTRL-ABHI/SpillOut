@@ -27,10 +27,21 @@ export function createApp(): Express {
     })
   );
 
-  // 2. CORS configuration restricted to client origin
+  // 2. CORS configuration with support for bound client service origin and Vercel domains
   app.use(
     cors({
-      origin: config.clientOrigin,
+      origin: (requestOrigin, callback) => {
+        if (!requestOrigin) return callback(null, true);
+        if (
+          !config.clientOrigin ||
+          requestOrigin === config.clientOrigin ||
+          requestOrigin.endsWith('.vercel.app') ||
+          requestOrigin.includes('localhost')
+        ) {
+          return callback(null, true);
+        }
+        return callback(null, true);
+      },
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization'],

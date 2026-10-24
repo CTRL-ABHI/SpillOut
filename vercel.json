@@ -1,0 +1,55 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "client": {
+      "root": "client",
+      "framework": "nextjs",
+      "bindings": [
+        {
+          "type": "service",
+          "service": "server",
+          "format": "url",
+          "env": "BACKEND_API_URL"
+        }
+      ]
+    },
+    "server": {
+      "root": "server",
+      "framework": "express",
+      "bindings": [
+        {
+          "type": "service",
+          "service": "client",
+          "format": "url",
+          "env": "CLIENT_ORIGIN"
+        }
+      ]
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": {
+        "service": "server"
+      }
+    },
+    {
+      "source": "/health",
+      "destination": {
+        "service": "server"
+      }
+    },
+    {
+      "source": "/ws",
+      "destination": {
+        "service": "server"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "client"
+      }
+    }
+  ]
+}

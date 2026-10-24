@@ -1,6 +1,17 @@
 import { User } from '../types';
 
-const API_BASE = '/api';
+const getApiBase = () => {
+  if (typeof window !== 'undefined') {
+    return '/api';
+  }
+  // Server runtime function context: resolve from bound service environment variable
+  const backend = process.env.BACKEND_API_URL;
+  if (backend) {
+    const trimmed = backend.replace(/\/$/, '');
+    return trimmed.endsWith('/api') ? trimmed : `${trimmed}/api`;
+  }
+  return 'http://localhost:4000/api';
+};
 
 interface ApiResponse<T = any> {
   data?: T;
@@ -11,7 +22,9 @@ interface ApiResponse<T = any> {
 
 async function request<T = any>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
   try {
-    const res = await fetch(`${API_BASE}${endpoint}`, {
+    const baseUrl = getApiBase();
+    const url = endpoint.startsWith('http') ? endpoint : `${baseUrl}${endpoint}`;
+    const res = await fetch(url, {
       ...options,
       headers: {
         'Content-Type': 'application/json',

@@ -17,8 +17,11 @@ class SocketClient {
   constructor() {
     if (typeof window !== 'undefined') {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      // In development, backend runs on port 4000; in production or proxy, relative or custom
-      const host = process.env.NEXT_PUBLIC_WS_URL || `${protocol}//${window.location.hostname}:4000/ws`;
+      // In local dev with separated ports, default to :4000; on unified deployments, default to same-origin /ws
+      const defaultHost = window.location.port === '3000'
+        ? `${protocol}//${window.location.hostname}:4000/ws`
+        : `${protocol}//${window.location.host}/ws`;
+      const host = process.env.NEXT_PUBLIC_WS_URL || defaultHost;
       this.url = host;
     }
   }

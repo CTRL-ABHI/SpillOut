@@ -1,11 +1,18 @@
 /** @type {import('next').NextConfig} */
+const getBackendDestination = () => {
+  const backend = process.env.BACKEND_API_URL;
+  if (!backend) return 'http://localhost:4000/api/:path*';
+  const trimmed = backend.replace(/\/$/, '');
+  return trimmed.endsWith('/api') ? `${trimmed}/:path*` : `${trimmed}/api/:path*`;
+};
+
 const nextConfig = {
   reactStrictMode: true,
   async rewrites() {
     return [
       {
         source: '/api/:path*',
-        destination: process.env.BACKEND_API_URL || 'http://localhost:4000/api/:path*',
+        destination: getBackendDestination(),
       },
     ];
   },
