@@ -15,15 +15,7 @@
     },
     "server": {
       "root": "server",
-      "framework": "express",
-      "bindings": [
-        {
-          "type": "service",
-          "service": "client",
-          "format": "url",
-          "env": "CLIENT_ORIGIN"
-        }
-      ]
+      "framework": "express"
     }
   },
   "rewrites": [
