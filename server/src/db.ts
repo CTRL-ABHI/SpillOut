@@ -6,8 +6,8 @@ declare global {
   var __prisma: PrismaClient | undefined;
 }
 
-// 1. Resolve DB URL with Vercel serverless /tmp fallback
-let dbUrl = process.env.DATABASE_URL;
+// 1. Resolve DB URL with Vercel Postgres / Neon aliases and serverless /tmp fallback
+let dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_PRISMA_URL || process.env.POSTGRES_URL;
 if (!dbUrl) {
   if (process.env.VERCEL) {
     dbUrl = 'file:/tmp/spillout.db';
@@ -16,8 +16,10 @@ if (!dbUrl) {
     dbUrl = 'file:./dev.db';
     process.env.DATABASE_URL = dbUrl;
   }
-} else if (process.env.VERCEL && dbUrl.startsWith('file:') && !dbUrl.includes('/tmp')) {
-  dbUrl = 'file:/tmp/spillout.db';
+} else {
+  if (process.env.VERCEL && dbUrl.startsWith('file:') && !dbUrl.includes('/tmp')) {
+    dbUrl = 'file:/tmp/spillout.db';
+  }
   process.env.DATABASE_URL = dbUrl;
 }
 

@@ -2,7 +2,10 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const dbUrl = process.env.DATABASE_URL || '';
+const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_PRISMA_URL || process.env.POSTGRES_URL || '';
+if (!process.env.DATABASE_URL && dbUrl) {
+  process.env.DATABASE_URL = dbUrl;
+}
 const isPostgres = dbUrl.startsWith('postgres://') || dbUrl.startsWith('postgresql://');
 
 const prismaDir = path.resolve(__dirname, '..', 'prisma');
