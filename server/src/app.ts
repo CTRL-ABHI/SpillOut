@@ -3,6 +3,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { config } from './config.js';
+import { ensureDatabase } from './db.js';
 import { authRouter } from './routes/auth.js';
 import { accountRouter } from './routes/account.js';
 import { logger } from './utils/logger.js';
@@ -55,8 +56,18 @@ export function createApp(): Express {
   // 4. Cookie parser
   app.use(cookieParser(config.cookieSecret));
 
-  // 5. Health check
-  app.get('/health', (_req: Request, res: Response) => {
+  // 5. Ensure database readiness on initial request
+  app.use(async (_req: Request, _res: Response, next: NextFunction) => {
+    try {
+      await ensureDatabase();
+    } catch (e: any) {
+      logger.warn('Database initialization check warning:', e?.message || e);
+    }
+    next();
+  });
+
+  // 6. Health check endpoints
+  app.get(['/health', '/api/health'], (_req: Request, res: Response) => {
     res.json({
       status: 'healthy',
       service: 'SPILLOUT-API',
@@ -64,16 +75,18 @@ export function createApp(): Express {
     });
   });
 
-  // 6. API routes
+  // 7. API routes (mounted with and without /api prefix to handle all Vercel rewrite patterns)
   app.use('/api/auth', authRouter);
+  app.use('/auth', authRouter);
   app.use('/api/account', accountRouter);
+  app.use('/account', accountRouter);
 
-  // 7. 404 handler
+  // 8. 404 handler
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: 'Endpoint not found' });
   });
 
-  // 8. Global Error Handler - never leak stack traces or internal secrets
+  // 9. Global Error Handler - never leak stack traces or internal secrets
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     logger.error('Unhandled server error', err);
     res.status(500).json({
@@ -83,3 +96,8 @@ export function createApp(): Express {
 
   return app;
 }
+
+// Instantiate default app for Vercel Express entrypoint execution
+const app = createApp();
+export default app;
+

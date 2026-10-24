@@ -6,12 +6,122 @@ declare global {
   var __prisma: PrismaClient | undefined;
 }
 
+// 1. Resolve DB URL with Vercel serverless /tmp fallback
+let dbUrl = process.env.DATABASE_URL;
+if (!dbUrl) {
+  if (process.env.VERCEL) {
+    dbUrl = 'file:/tmp/spillout.db';
+    process.env.DATABASE_URL = dbUrl;
+  } else {
+    dbUrl = 'file:./dev.db';
+    process.env.DATABASE_URL = dbUrl;
+  }
+} else if (process.env.VERCEL && dbUrl.startsWith('file:') && !dbUrl.includes('/tmp')) {
+  dbUrl = 'file:/tmp/spillout.db';
+  process.env.DATABASE_URL = dbUrl;
+}
+
 export const prisma =
   global.__prisma ||
   new PrismaClient({
+    datasources: {
+      db: {
+        url: dbUrl,
+      },
+    },
     log: config.isProduction ? ['error', 'warn'] : ['error', 'warn'],
   });
 
 if (!config.isProduction) {
   global.__prisma = prisma;
 }
+
+let dbInitPromise: Promise<void> | null = null;
+
+/**
+ * Ensure database tables and indexes exist on boot (especially on fresh serverless runtimes).
+ */
+export async function ensureDatabase(): Promise<void> {
+  if (dbInitPromise) return dbInitPromise;
+
+  dbInitPromise = (async () => {
+    try {
+      const activeUrl = process.env.DATABASE_URL || '';
+      const isPg = activeUrl.startsWith('postgres://') || activeUrl.startsWith('postgresql://');
+
+      if (isPg) {
+        await prisma.$executeRawUnsafe(`
+          DO $$ BEGIN
+            CREATE TYPE "Gender" AS ENUM ('Male', 'Female', 'Object');
+          EXCEPTION
+            WHEN duplicate_object THEN null;
+          END $$;
+        `).catch(() => {});
+
+        await prisma.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "User" (
+            "id" TEXT PRIMARY KEY,
+            "username" VARCHAR(10) NOT NULL,
+            "canonicalUsername" VARCHAR(10) NOT NULL UNIQUE,
+            "passwordHash" TEXT NOT NULL,
+            "gender" "Gender" NOT NULL,
+            "publicKey" TEXT,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "lastActivityAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+
+        await prisma.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "Session" (
+            "id" TEXT PRIMARY KEY,
+            "token" TEXT NOT NULL UNIQUE,
+            "userId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "expiresAt" TIMESTAMP(3) NOT NULL
+          );
+        `);
+
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "User_canonicalUsername_idx" ON "User"("canonicalUsername");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "User_lastActivityAt_idx" ON "User"("lastActivityAt");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Session_token_idx" ON "Session"("token");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Session_userId_idx" ON "Session"("userId");`).catch(() => {});
+      } else {
+        await prisma.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "User" (
+            "id" TEXT PRIMARY KEY,
+            "username" TEXT NOT NULL,
+            "canonicalUsername" TEXT NOT NULL UNIQUE,
+            "passwordHash" TEXT NOT NULL,
+            "gender" TEXT NOT NULL,
+            "publicKey" TEXT,
+            "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "lastActivityAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+
+        await prisma.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "Session" (
+            "id" TEXT PRIMARY KEY,
+            "token" TEXT NOT NULL UNIQUE,
+            "userId" TEXT NOT NULL,
+            "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "expiresAt" DATETIME NOT NULL,
+            FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE
+          );
+        `);
+
+        await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "User_canonicalUsername_key" ON "User"("canonicalUsername");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "User_canonicalUsername_idx" ON "User"("canonicalUsername");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "User_lastActivityAt_idx" ON "User"("lastActivityAt");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "Session_token_key" ON "Session"("token");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Session_token_idx" ON "Session"("token");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Session_userId_idx" ON "Session"("userId");`).catch(() => {});
+      }
+    } catch (err: any) {
+      console.warn('[Database] Auto-migration check:', err?.message || err);
+    }
+  })();
+
+  return dbInitPromise;
+}
+
