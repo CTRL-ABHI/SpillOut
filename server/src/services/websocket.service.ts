@@ -273,7 +273,7 @@ export function setupWebSocketServer(wss: WebSocketServer): void {
       presenceService.unregister(ws);
     });
 
-    ws.on('error', (err) => {
+    ws.on('error', (err: unknown) => {
       logger.error('WebSocket connection error', err);
       presenceService.unregister(ws);
     });

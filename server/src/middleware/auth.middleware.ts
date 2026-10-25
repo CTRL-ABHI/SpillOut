@@ -82,7 +82,7 @@ export async function authMiddleware(
       await prisma.user.update({
         where: { id: session.user.id },
         data: { lastActivityAt: now },
-      }).catch((err) => {
+      }).catch((err: unknown) => {
         logger.error('Failed to update lastActivityAt', err);
       });
       session.user.lastActivityAt = now;

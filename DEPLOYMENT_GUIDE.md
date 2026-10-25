@@ -111,7 +111,7 @@ Confirm that the commit containing the production fixes is pushed to your GitHub
    - **Branch**: `main`
    - **Root Directory**: `server` *(Important: must be `server`)*
    - **Runtime**: `Node`
-   - **Build Command**: `npm install && npm run build`
+   - **Build Command**: `npm install --include=dev && npm run build`
    - **Start Command**: `npm run start`
    - **Plan**: `Free`
 4. Under **Environment Variables**, click **Add Environment Variable** for each:
@@ -222,3 +222,4 @@ https://your-spillout.vercel.app/api/health
 | `/api/health` returns `database: disconnected` | `DATABASE_URL` missing or invalid on Render | Verify that the Neon connection string is pasted correctly in Render environment variables with `?sslmode=require`. |
 | WebSocket connection fails (`wss://.../ws`) | Render free tier service is spinning up | Render's free tier spins down after 15 minutes of inactivity. The first request takes 30-45 seconds to wake up. Once awake, WebSockets connect immediately. |
 | CORS error in browser console | `CLIENT_ORIGIN` on Render does not match Vercel URL | In Render dashboard, set `CLIENT_ORIGIN` to match your Vercel URL (e.g. `https://your-spillout.vercel.app`). |
+
