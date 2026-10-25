@@ -23,9 +23,9 @@ export async function startServer() {
   // Start 7-day inactivity cleanup background service
   accountCleanupService.start();
 
-  server.listen(config.port, () => {
-    logger.info(`SPILLOUT backend running on port ${config.port}`);
-    logger.info(`WebSocket endpoint available at ws://localhost:${config.port}/ws`);
+  server.listen(config.port, '0.0.0.0', () => {
+    logger.info(`SPILLOUT backend running on port ${config.port} (bound to 0.0.0.0)`);
+    logger.info(`WebSocket endpoint available at ws://0.0.0.0:${config.port}/ws`);
     logger.info(`Environment: ${config.nodeEnv}`);
     logger.info(`Inactivity expiration policy: ${config.inactivityExpirationDays} consecutive days`);
   });

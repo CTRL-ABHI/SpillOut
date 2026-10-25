@@ -15,3 +15,14 @@ export const config = {
   inactivityCheckIntervalMs: parseInt(process.env.INACTIVITY_CHECK_INTERVAL_MS || '3600000', 10), // 1 hour
   redisUrl: process.env.REDIS_URL || undefined,
 };
+
+// Validate production environment settings without printing secrets
+if (config.isProduction) {
+  if (!process.env.DATABASE_URL && !process.env.POSTGRES_PRISMA_URL && !process.env.POSTGRES_URL) {
+    console.warn('[Config] WARNING: Running in production without a PostgreSQL DATABASE_URL. Persistent multi-instance state requires a hosted database.');
+  }
+  if (!process.env.COOKIE_SECRET || process.env.COOKIE_SECRET.includes('fallback')) {
+    console.warn('[Config] WARNING: COOKIE_SECRET is using a default fallback. Set a custom 32+ character COOKIE_SECRET in your production dashboard.');
+  }
+}
+

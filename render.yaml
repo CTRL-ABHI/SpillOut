@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: spillout-backend
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: server
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: COOKIE_SECRET
+        generateValue: true
+      - key: CLIENT_ORIGIN
+        sync: false
+      - key: SESSION_TTL_HOURS
+        value: "168"
+      - key: INACTIVITY_EXPIRATION_DAYS
+        value: "7"
