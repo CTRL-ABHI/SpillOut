@@ -10,25 +10,38 @@ export interface ConnectedClient {
 }
 
 export class PresenceService {
-  // canonicalUsername -> Set of ConnectedClient
+  // canonicalUsername (lowercase) -> Set of ConnectedClient
   private activeConnections = new Map<string, Set<ConnectedClient>>();
   // ws -> ConnectedClient mapping for fast lookup
   private clientLookup = new WeakMap<WebSocket, ConnectedClient>();
 
+  private normalize(username: string): string {
+    return (username || '').toLowerCase().trim();
+  }
+
   /**
-   * Register a connected user
+   * Register a connected user connection
    */
   public register(client: ConnectedClient): void {
-    const { canonicalUsername } = client;
-    let userSockets = this.activeConnections.get(canonicalUsername);
+    const key = this.normalize(client.canonicalUsername || client.username);
+    if (!key) return;
+
+    let userSockets = this.activeConnections.get(key);
+    const wasOnline = this.isOnline(key);
+
     if (!userSockets) {
       userSockets = new Set();
-      this.activeConnections.set(canonicalUsername, userSockets);
-      logger.info(`User came online: ${client.username}`);
-      this.broadcastPresence(canonicalUsername, true);
+      this.activeConnections.set(key, userSockets);
     }
+
     userSockets.add(client);
     this.clientLookup.set(client.ws, client);
+
+    // Only broadcast online if the user transitioned from 0 active open connections to >= 1
+    if (!wasOnline) {
+      logger.info(`User came online: ${client.username} (${key})`);
+      this.broadcastPresence(key, true);
+    }
   }
 
   /**
@@ -38,14 +51,19 @@ export class PresenceService {
     const client = this.clientLookup.get(ws);
     if (!client) return undefined;
 
-    const { canonicalUsername, username } = client;
-    const userSockets = this.activeConnections.get(canonicalUsername);
+    const key = this.normalize(client.canonicalUsername || client.username);
+    const userSockets = this.activeConnections.get(key);
+
     if (userSockets) {
       userSockets.delete(client);
-      if (userSockets.size === 0) {
-        this.activeConnections.delete(canonicalUsername);
-        logger.info(`User went offline: ${username}`);
-        this.broadcastPresence(canonicalUsername, false);
+
+      // Check if user still has at least one active open socket
+      const stillOnline = Array.from(userSockets).some((c) => c.ws.readyState === 1 /* OPEN */);
+
+      if (!stillOnline) {
+        this.activeConnections.delete(key);
+        logger.info(`User went offline: ${client.username} (${key})`);
+        this.broadcastPresence(key, false);
       }
     }
 
@@ -53,27 +71,54 @@ export class PresenceService {
   }
 
   /**
-   * Check if a user is currently online
+   * Check if a user is currently online with at least one active OPEN socket
    */
   public isOnline(canonicalUsername: string): boolean {
-    const sockets = this.activeConnections.get(canonicalUsername.toLowerCase());
-    return !!(sockets && sockets.size > 0);
+    const key = this.normalize(canonicalUsername);
+    const sockets = this.activeConnections.get(key);
+    if (!sockets || sockets.size === 0) return false;
+
+    for (const client of sockets) {
+      if (client.ws.readyState === 1 /* OPEN */) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
-   * Get all active sockets for a given user
+   * Get all active OPEN sockets for a given user
    */
   public getSockets(canonicalUsername: string): WebSocket[] {
-    const sockets = this.activeConnections.get(canonicalUsername.toLowerCase());
+    const key = this.normalize(canonicalUsername);
+    const sockets = this.activeConnections.get(key);
     if (!sockets) return [];
-    return Array.from(sockets).map((c) => c.ws);
+
+    return Array.from(sockets)
+      .map((c) => c.ws)
+      .filter((ws) => ws.readyState === 1 /* OPEN */);
+  }
+
+  /**
+   * Get list of all canonical usernames currently online
+   */
+  public getOnlineUsers(): string[] {
+    const online: string[] = [];
+    for (const [key, sockets] of this.activeConnections.entries()) {
+      const hasOpen = Array.from(sockets).some((c) => c.ws.readyState === 1 /* OPEN */);
+      if (hasOpen) {
+        online.push(key);
+      }
+    }
+    return online;
   }
 
   /**
    * Disconnect a user completely (e.g. on account deletion or session revocation)
    */
   public disconnectUser(canonicalUsername: string, reason: string): void {
-    const sockets = this.activeConnections.get(canonicalUsername.toLowerCase());
+    const key = this.normalize(canonicalUsername);
+    const sockets = this.activeConnections.get(key);
     if (sockets) {
       for (const client of sockets) {
         try {
@@ -88,8 +133,8 @@ export class PresenceService {
           // Socket may already be closing
         }
       }
-      this.activeConnections.delete(canonicalUsername.toLowerCase());
-      this.broadcastPresence(canonicalUsername, false);
+      this.activeConnections.delete(key);
+      this.broadcastPresence(key, false);
     }
   }
 
@@ -97,18 +142,21 @@ export class PresenceService {
    * Send a presence notification to interested connected users
    */
   private broadcastPresence(canonicalUsername: string, isOnline: boolean): void {
+    const key = this.normalize(canonicalUsername);
     const payload = JSON.stringify({
       type: 'presence-update',
       payload: {
-        canonicalUsername,
+        canonicalUsername: key,
         isOnline,
         timestamp: new Date().toISOString(),
       },
     });
 
-    for (const clients of this.activeConnections.values()) {
+    for (const [userKey, clients] of this.activeConnections.entries()) {
+      if (userKey === key) continue; // Don't echo to self
+
       for (const client of clients) {
-        if (client.canonicalUsername !== canonicalUsername && client.ws.readyState === 1 /* OPEN */) {
+        if (client.ws.readyState === 1 /* OPEN */) {
           try {
             client.ws.send(payload);
           } catch {

@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
+import { socket } from '@/lib/socket';
 import { generateSafetyFingerprint, getOrCreateIdentityKeyPair } from '@/lib/crypto';
 import { ActiveConversation } from '@/types';
 import { Search, X, Loader2, AlertCircle, ArrowRight } from 'lucide-react';
@@ -28,6 +29,41 @@ export const UserSearchModal: React.FC<UserSearchModalProps> = ({
     publicKey: string | null;
     isOnline: boolean;
   } | null>(null);
+
+  // Listen for real-time presence updates while viewing the resolved user
+  useEffect(() => {
+    if (!resolvedUser) return;
+
+    const unsub = socket.on('presence-update', (payload: any) => {
+      const target = (payload?.canonicalUsername || '').toLowerCase().trim();
+      if (target === resolvedUser.canonicalUsername.toLowerCase().trim()) {
+        const isOnline = !!payload?.isOnline;
+        setResolvedUser((prev) => (prev ? { ...prev, isOnline } : null));
+        if (isOnline && error && error.includes('currently offline')) {
+          setError(null);
+        }
+      }
+    });
+
+    const unsubStatus = socket.on('presence-status', (payload: any) => {
+      const target = (payload?.username || '').toLowerCase().trim();
+      if (target === resolvedUser.canonicalUsername.toLowerCase().trim()) {
+        const isOnline = !!payload?.isOnline;
+        setResolvedUser((prev) => (prev ? { ...prev, isOnline } : null));
+        if (isOnline && error && error.includes('currently offline')) {
+          setError(null);
+        }
+      }
+    });
+
+    // Query immediate presence status
+    socket.checkPresence(resolvedUser.canonicalUsername);
+
+    return () => {
+      unsub();
+      unsubStatus();
+    };
+  }, [resolvedUser, error]);
 
   if (!isOpen) return null;
 

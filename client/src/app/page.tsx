@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { User, ActiveConversation, ChatMessage, CallState } from '@/types';
-import { api } from '@/lib/api';
+import { api, getApiSessionToken } from '@/lib/api';
 import { socket } from '@/lib/socket';
 import {
   getOrCreateIdentityKeyPair,
@@ -75,7 +75,8 @@ export default function SpilloutApp() {
         if (res.data?.user) {
           setCurrentUser(res.data.user);
           await getOrCreateIdentityKeyPair();
-          socket.connect();
+          const token = res.data.token || getApiSessionToken();
+          socket.connect(token || undefined);
           loadAccountStatus();
         }
       } catch (err) {
@@ -163,21 +164,58 @@ export default function SpilloutApp() {
       }
     });
 
-    // B. Listen for presence updates
-    const unsubPresence = socket.on('presence-update', (payload: any) => {
-      const { canonicalUsername, isOnline } = payload;
+    // B. Listen for initial presence snapshot upon connection / reconnection
+    const unsubSnapshot = socket.on('presence-snapshot', (payload: any) => {
+      const onlineUsers: string[] = (payload?.onlineUsers || []).map((u: string) => u.toLowerCase().trim());
       setConversations((prev) =>
-        prev.map((c) => (c.canonicalUsername === canonicalUsername ? { ...c, isOnline } : c))
+        prev.map((c) => ({
+          ...c,
+          isOnline: onlineUsers.includes(c.canonicalUsername.toLowerCase().trim()),
+        }))
       );
     });
 
-    // C. Listen for message undeliverable
+    // C. Listen for real-time presence updates (user came online / went offline)
+    const unsubPresence = socket.on('presence-update', (payload: any) => {
+      const target = (payload?.canonicalUsername || '').toLowerCase().trim();
+      const isOnline = !!payload?.isOnline;
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.canonicalUsername.toLowerCase().trim() === target ? { ...c, isOnline } : c
+        )
+      );
+    });
+
+    // D. Listen for individual presence status responses
+    const unsubStatus = socket.on('presence-status', (payload: any) => {
+      const target = (payload?.username || '').toLowerCase().trim();
+      const isOnline = !!payload?.isOnline;
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.canonicalUsername.toLowerCase().trim() === target ? { ...c, isOnline } : c
+        )
+      );
+    });
+
+    // E. Listen for socket reconnection and re-verify presence
+    const unsubStatusChange = socket.on('connection-status', ({ status }: any) => {
+      if (status === 'connected') {
+        setConversations((prev) => {
+          prev.forEach((c) => {
+            socket.checkPresence(c.username);
+          });
+          return prev;
+        });
+      }
+    });
+
+    // F. Listen for message undeliverable
     const unsubUndelivered = socket.on('message-undeliverable', (payload: any) => {
       setToastMessage(payload.reason || 'Message could not be delivered.');
       setTimeout(() => setToastMessage(null), 5000);
     });
 
-    // D. Initialize WebRTC voice manager
+    // G. Initialize WebRTC voice manager
     const cleanupVoice = webrtcVoice.init({
       onStateChange: (state, error) => {
         setCallSession((prev) => ({
@@ -199,7 +237,10 @@ export default function SpilloutApp() {
 
     return () => {
       unsubMsg();
+      unsubSnapshot();
       unsubPresence();
+      unsubStatus();
+      unsubStatusChange();
       unsubUndelivered();
       cleanupVoice();
     };

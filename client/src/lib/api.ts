@@ -4,6 +4,33 @@ let inMemorySessionToken: string | null = null;
 
 export const setApiSessionToken = (token: string | null) => {
   inMemorySessionToken = token;
+  if (typeof window !== 'undefined') {
+    try {
+      if (token) {
+        sessionStorage.setItem('spillout_token', token);
+      } else {
+        sessionStorage.removeItem('spillout_token');
+      }
+    } catch {
+      // sessionStorage may be restricted
+    }
+  }
+};
+
+export const getApiSessionToken = (): string | null => {
+  if (inMemorySessionToken) return inMemorySessionToken;
+  if (typeof window !== 'undefined') {
+    try {
+      const saved = sessionStorage.getItem('spillout_token');
+      if (saved) {
+        inMemorySessionToken = saved;
+        return saved;
+      }
+    } catch {
+      // Ignore sessionStorage errors
+    }
+  }
+  return null;
 };
 
 const getApiBase = () => {
@@ -37,9 +64,10 @@ async function request<T = any>(endpoint: string, options: RequestInit = {}): Pr
   try {
     const baseUrl = getApiBase();
     const url = endpoint.startsWith('http') ? endpoint : `${baseUrl}${endpoint}`;
+    const activeToken = inMemorySessionToken || getApiSessionToken();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      ...(inMemorySessionToken ? { Authorization: `Bearer ${inMemorySessionToken}` } : {}),
+      ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
       ...(options.headers as Record<string, string> || {}),
     };
 
@@ -103,7 +131,7 @@ export const api = {
       body: JSON.stringify(payload),
     });
     if (res.data?.token) {
-      inMemorySessionToken = res.data.token;
+      setApiSessionToken(res.data.token);
     }
     return res;
   },
@@ -114,20 +142,24 @@ export const api = {
       body: JSON.stringify(payload),
     });
     if (res.data?.token) {
-      inMemorySessionToken = res.data.token;
+      setApiSessionToken(res.data.token);
     }
     return res;
   },
 
   getMe: async () => {
-    return request<{ user: User }>('/auth/me');
+    const res = await request<{ user: User; token?: string }>('/auth/me');
+    if (res.data?.token) {
+      setApiSessionToken(res.data.token);
+    }
+    return res;
   },
 
   logout: async () => {
     const res = await request<{ success: boolean }>('/auth/logout', {
       method: 'POST',
     });
-    inMemorySessionToken = null;
+    setApiSessionToken(null);
     return res;
   },
 

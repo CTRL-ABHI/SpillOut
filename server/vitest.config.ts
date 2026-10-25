@@ -5,6 +5,10 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     testTimeout: 10000,
-    fileParallelism: false, // Run integration tests sequentially against local DB
+    fileParallelism: false, // Run integration tests sequentially against isolated local DB
+    env: {
+      DATABASE_URL: 'file:./dev.db',
+      NODE_ENV: 'test',
+    },
   },
 });

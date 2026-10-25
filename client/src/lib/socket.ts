@@ -3,32 +3,70 @@
  * Real-time presence, ephemeral message relay, and WebRTC signaling
  */
 
+import { getApiSessionToken } from './api';
+
 type Listener<T = any> = (data: T) => void;
+
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'reconnecting' | 'error';
 
 class SocketClient {
   private ws: WebSocket | null = null;
-  private url: string = '';
+  private token: string | null = null;
   private pingInterval: any = null;
   private reconnectTimeout: any = null;
   private listeners: Map<string, Set<Listener>> = new Map();
   private isExplicitlyClosed = false;
   private isConnecting = false;
 
-  constructor() {
-    if (typeof window !== 'undefined') {
+  private getWsUrl(token?: string | null): string {
+    let base = process.env.NEXT_PUBLIC_WS_URL;
+
+    if (!base && typeof window !== 'undefined') {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      // In local dev with separated ports, default to :4000; on unified deployments, default to same-origin /ws
-      const defaultHost = window.location.port === '3000'
+      base = window.location.port === '3000'
         ? `${protocol}//${window.location.hostname}:4000/ws`
         : `${protocol}//${window.location.host}/ws`;
-      const host = process.env.NEXT_PUBLIC_WS_URL || defaultHost;
-      this.url = host;
     }
+
+    if (!base) {
+      base = 'ws://localhost:4000/ws';
+    }
+
+    // Convert http/https to ws/wss if incorrectly provided
+    if (base.startsWith('https://')) {
+      base = 'wss://' + base.slice(8);
+    } else if (base.startsWith('http://')) {
+      base = 'ws://' + base.slice(7);
+    }
+
+    let trimmed = base.trim().replace(/\/+$/, '');
+    if (!trimmed.endsWith('/ws')) {
+      trimmed = `${trimmed}/ws`;
+    }
+
+    const activeToken = token || this.token || getApiSessionToken();
+    if (activeToken) {
+      const separator = trimmed.includes('?') ? '&' : '?';
+      return `${trimmed}${separator}token=${encodeURIComponent(activeToken)}`;
+    }
+
+    return trimmed;
   }
 
   public connect(token?: string): void {
     if (typeof window === 'undefined') return;
+
+    if (token) {
+      this.token = token;
+    } else if (!this.token) {
+      this.token = getApiSessionToken();
+    }
+
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      // If already connected and token was provided, ensure authenticated
+      if (this.ws.readyState === WebSocket.OPEN && this.token) {
+        this.send('auth', { token: this.token });
+      }
       return;
     }
 
@@ -37,16 +75,18 @@ class SocketClient {
     this.emit('connection-status', { status: 'connecting' });
 
     try {
-      this.ws = new WebSocket(this.url);
+      const targetUrl = this.getWsUrl(this.token);
+      this.ws = new WebSocket(targetUrl);
 
       this.ws.onopen = () => {
         this.isConnecting = false;
         this.emit('connection-status', { status: 'connected' });
         this.startHeartbeat();
 
-        // Send auth if token provided
-        if (token) {
-          this.send('auth', { token });
+        // Send auth payload for complete handshake redundancy
+        const activeToken = this.token || getApiSessionToken();
+        if (activeToken) {
+          this.send('auth', { token: activeToken });
         }
       };
 
@@ -68,10 +108,14 @@ class SocketClient {
 
       this.ws.onclose = (event: CloseEvent) => {
         this.stopHeartbeat();
-        this.emit('connection-status', { status: 'disconnected', code: event.code, reason: event.reason });
+        this.emit('connection-status', {
+          status: 'disconnected',
+          code: event.code,
+          reason: event.reason,
+        });
 
         if (!this.isExplicitlyClosed) {
-          this.scheduleReconnect(token);
+          this.scheduleReconnect();
         }
       };
 
@@ -81,17 +125,19 @@ class SocketClient {
       };
     } catch (err) {
       this.isConnecting = false;
-      this.scheduleReconnect(token);
+      this.scheduleReconnect();
     }
   }
 
-  private scheduleReconnect(token?: string): void {
+  private scheduleReconnect(): void {
     if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
+    this.emit('connection-status', { status: 'reconnecting' });
+
     this.reconnectTimeout = setTimeout(() => {
       if (!this.isExplicitlyClosed) {
-        this.connect(token);
+        this.connect();
       }
-    }, 3000);
+    }, 2500);
   }
 
   private startHeartbeat(): void {
@@ -100,7 +146,7 @@ class SocketClient {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({ type: 'ping' }));
       }
-    }, 25000);
+    }, 20000);
   }
 
   private stopHeartbeat(): void {
@@ -115,8 +161,12 @@ class SocketClient {
       return false;
     }
 
-    this.ws.send(JSON.stringify({ type, payload }));
-    return true;
+    try {
+      this.ws.send(JSON.stringify({ type, payload }));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   public sendE2EEMessage(
@@ -178,6 +228,7 @@ class SocketClient {
 
   public disconnect(): void {
     this.isExplicitlyClosed = true;
+    this.token = null;
     this.stopHeartbeat();
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);

@@ -24,16 +24,55 @@ function parseCookies(cookieHeader?: string): Record<string, string> {
 }
 
 export function setupWebSocketServer(wss: WebSocketServer): void {
+  // Stale connection cleanup loop (every 30 seconds)
+  const heartbeatInterval = setInterval(() => {
+    wss.clients.forEach((clientWs) => {
+      if ((clientWs as any).isAlive === false) {
+        logger.debug('Terminating dead/unresponsive WebSocket client');
+        presenceService.unregister(clientWs);
+        return clientWs.terminate();
+      }
+      (clientWs as any).isAlive = false;
+      try {
+        clientWs.ping();
+      } catch {
+        // Socket may have closed
+      }
+    });
+  }, 30000);
+
+  wss.on('close', () => {
+    clearInterval(heartbeatInterval);
+  });
+
   wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
     logger.debug('New incoming WebSocket connection attempt');
 
+    (ws as any).isAlive = true;
+    ws.on('pong', () => {
+      (ws as any).isAlive = true;
+    });
+
     let currentClient: ConnectedClient | null = null;
 
-    // Try extracting session token from cookie
+    // 1. Try extracting session token from cookie
     let token: string | undefined;
     if (req.headers.cookie) {
       const parsedCookies = parseCookies(req.headers.cookie);
       token = parsedCookies[SESSION_COOKIE_NAME];
+    }
+
+    // 2. If no cookie, try extracting from URL query parameters (?token=...)
+    if (!token && req.url) {
+      try {
+        const parsedUrl = new URL(req.url, 'http://localhost');
+        const queryToken = parsedUrl.searchParams.get('token');
+        if (queryToken) {
+          token = queryToken;
+        }
+      } catch {
+        // Ignore URL parse errors
+      }
     }
 
     // Authenticate token helper
@@ -65,22 +104,36 @@ export function setupWebSocketServer(wss: WebSocketServer): void {
           return false;
         }
 
+        const canonical = (session.user.canonicalUsername || session.user.username).toLowerCase().trim();
+
         currentClient = {
           ws,
           userId: session.user.id,
           username: session.user.username,
-          canonicalUsername: session.user.canonicalUsername,
+          canonicalUsername: canonical,
           connectedAt: new Date(),
         };
 
         presenceService.register(currentClient);
 
+        // A. Confirm authentication to the client
         ws.send(
           JSON.stringify({
             type: 'auth-success',
             payload: {
               username: session.user.username,
-              canonicalUsername: session.user.canonicalUsername,
+              canonicalUsername: canonical,
+            },
+          })
+        );
+
+        // B. Send initial snapshot of all currently online users to this newly connected client
+        const onlineUsers = presenceService.getOnlineUsers();
+        ws.send(
+          JSON.stringify({
+            type: 'presence-snapshot',
+            payload: {
+              onlineUsers,
             },
           })
         );
@@ -104,7 +157,10 @@ export function setupWebSocketServer(wss: WebSocketServer): void {
         const parsed: WSMessage = JSON.parse(data.toString());
         const { type, payload } = parsed;
 
-        // 1. Initial auth message if cookie wasn't present
+        // Keep connection marked alive on any inbound message
+        (ws as any).isAlive = true;
+
+        // 1. Initial auth message if token was provided in-message
         if (type === 'auth') {
           if (payload?.token) {
             await authenticate(payload.token);

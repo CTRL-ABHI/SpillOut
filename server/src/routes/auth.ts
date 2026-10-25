@@ -272,6 +272,7 @@ authRouter.post('/login', authRateLimiter, async (req: Request, res: Response): 
 authRouter.get('/me', authMiddleware, async (req: Request, res: Response): Promise<void> => {
   res.json({
     user: req.user,
+    token: req.sessionToken,
   });
 });
 
