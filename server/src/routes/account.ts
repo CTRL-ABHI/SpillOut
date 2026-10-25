@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../db.js';
 import { authMiddleware, SESSION_COOKIE_NAME } from '../middleware/auth.middleware.js';
+import { getSessionCookieOptions } from './auth.js';
 import { presenceService } from '../services/presence.service.js';
 import { accountCleanupService } from '../services/account-cleanup.service.js';
 import { config } from '../config.js';
@@ -48,12 +49,7 @@ accountRouter.delete('/me', authMiddleware, async (req: Request, res: Response):
     });
 
     // 3. Clear cookie
-    res.clearCookie(SESSION_COOKIE_NAME, {
-      httpOnly: true,
-      secure: config.isProduction,
-      sameSite: config.isProduction ? 'strict' : 'lax',
-      path: '/',
-    });
+    res.clearCookie(SESSION_COOKIE_NAME, getSessionCookieOptions());
 
     logger.info(`User voluntarily deleted their account: ${user.canonicalUsername}`);
 

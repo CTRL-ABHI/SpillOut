@@ -2,9 +2,11 @@
   "name": "spillout-server",
   "version": "1.0.0",
   "private": true,
+  "main": "dist/app.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "node scripts/prepare-prisma.cjs && tsc",
+    "vercel-build": "node scripts/prepare-prisma.cjs && tsc",
     "start": "node dist/index.js",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",

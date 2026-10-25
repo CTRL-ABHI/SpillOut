@@ -3,7 +3,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { config } from './config.js';
-import { ensureDatabase } from './db.js';
+import { ensureDatabase, prisma } from './db.js';
 import { authRouter } from './routes/auth.js';
 import { accountRouter } from './routes/account.js';
 import { logger } from './utils/logger.js';
@@ -66,11 +66,24 @@ export function createApp(): Express {
     next();
   });
 
-  // 6. Health check endpoints
-  app.get(['/health', '/api/health'], (_req: Request, res: Response) => {
-    res.json({
-      status: 'healthy',
+  // 6. Safe Health Check endpoint with non-destructive DB ping
+  app.get(['/health', '/api/health'], async (_req: Request, res: Response) => {
+    let dbConnected = false;
+    let dbDetail = 'connected';
+    try {
+      await prisma.$queryRawUnsafe('SELECT 1');
+      dbConnected = true;
+    } catch (e: any) {
+      dbConnected = false;
+      dbDetail = config.isProduction ? 'Database unreachable' : (e?.message || 'Database error');
+      logger.warn('[Health Check] DB ping failed:', e?.message || e);
+    }
+
+    res.status(dbConnected ? 200 : 503).json({
+      status: dbConnected ? 'healthy' : 'degraded',
       service: 'SPILLOUT-API',
+      database: dbConnected ? 'connected' : 'disconnected',
+      diagnostics: dbConnected ? undefined : dbDetail,
       timestamp: new Date().toISOString(),
     });
   });
@@ -99,5 +112,7 @@ export function createApp(): Express {
 
 // Instantiate default app for Vercel Express entrypoint execution
 const app = createApp();
+(app as any).default = app;
 export default app;
+
 

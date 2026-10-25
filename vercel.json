@@ -4,6 +4,7 @@
     "client": {
       "root": "client",
       "framework": "nextjs",
+      "buildCommand": "npm run build",
       "bindings": [
         {
           "type": "service",
@@ -15,7 +16,9 @@
     },
     "server": {
       "root": "server",
-      "framework": "express"
+      "framework": "express",
+      "buildCommand": "npm run build",
+      "entrypoint": "dist/app.js"
     }
   },
   "rewrites": [

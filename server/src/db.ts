@@ -6,29 +6,36 @@ declare global {
   var __prisma: PrismaClient | undefined;
 }
 
-// 1. Resolve DB URL with Vercel Postgres / Neon aliases and serverless /tmp fallback
-let dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_PRISMA_URL || process.env.POSTGRES_URL;
-if (!dbUrl) {
+// 1. Resolve DB URL with Vercel Postgres / Neon aliases and serverless fallback
+const resolveDbUrl = (): string => {
+  const url = process.env.DATABASE_URL || process.env.POSTGRES_PRISMA_URL || process.env.POSTGRES_URL;
+  if (url) {
+    process.env.DATABASE_URL = url;
+    return url;
+  }
+
   if (process.env.VERCEL) {
-    dbUrl = 'file:/tmp/spillout.db';
-    process.env.DATABASE_URL = dbUrl;
-  } else {
-    dbUrl = 'file:./dev.db';
-    process.env.DATABASE_URL = dbUrl;
+    console.warn(
+      '[Database] WARNING: DATABASE_URL is not set on Vercel. For persistent multi-instance accounts, please configure a PostgreSQL DATABASE_URL in Vercel project environment variables.'
+    );
+    const tmpUrl = 'file:/tmp/spillout.db';
+    process.env.DATABASE_URL = tmpUrl;
+    return tmpUrl;
   }
-} else {
-  if (process.env.VERCEL && dbUrl.startsWith('file:') && !dbUrl.includes('/tmp')) {
-    dbUrl = 'file:/tmp/spillout.db';
-  }
-  process.env.DATABASE_URL = dbUrl;
-}
+
+  const localUrl = 'file:./dev.db';
+  process.env.DATABASE_URL = localUrl;
+  return localUrl;
+};
+
+const activeDbUrl = resolveDbUrl();
 
 export const prisma =
   global.__prisma ||
   new PrismaClient({
     datasources: {
       db: {
-        url: dbUrl,
+        url: activeDbUrl,
       },
     },
     log: config.isProduction ? ['error', 'warn'] : ['error', 'warn'],

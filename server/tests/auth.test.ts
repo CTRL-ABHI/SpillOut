@@ -118,6 +118,7 @@ describe('SPILLOUT Authentication & Inactivity Lifecycle Integration Tests', () 
 
     expect(validLogin.status).toBe(200);
     expect(validLogin.body.user.username).toBe('LoginUser');
+    expect(validLogin.body.token).toBeDefined();
 
     // Invalid login password
     const wrongMatrix = ['X', 'y', 'z', '!', ' ', '@', '1', '2', '0'];
@@ -130,6 +131,38 @@ describe('SPILLOUT Authentication & Inactivity Lifecycle Integration Tests', () 
 
     expect(invalidLogin.status).toBe(401);
     expect(invalidLogin.body.error).toBe('Invalid username or password');
+
+    // Non-existent user login
+    const nonExistent = await request(app)
+      .post('/api/auth/login')
+      .send({
+        username: 'NoSuchUser',
+        password: matrix,
+      });
+    expect(nonExistent.status).toBe(401);
+    expect(nonExistent.body.error).toBe('Invalid username or password');
+
+    // Malformed matrix payload
+    const malformed = await request(app)
+      .post('/api/auth/login')
+      .send({
+        username: 'loginuser',
+        password: ['1', '2', '3'],
+      });
+    expect(malformed.status).toBe(400);
+    expect(malformed.body.error).toBe('Invalid username or password format');
+  });
+
+  it('verifies safe health check endpoints with database connectivity ping', async () => {
+    const res1 = await request(app).get('/health');
+    expect(res1.status).toBe(200);
+    expect(res1.body.status).toBe('healthy');
+    expect(res1.body.database).toBe('connected');
+
+    const res2 = await request(app).get('/api/health');
+    expect(res2.status).toBe(200);
+    expect(res2.body.status).toBe('healthy');
+    expect(res2.body.database).toBe('connected');
   });
 
   it('authenticates session via /api/auth/me and logs out cleanly', async () => {

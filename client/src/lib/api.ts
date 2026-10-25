@@ -1,11 +1,24 @@
 import { User } from '../types';
 
+let inMemorySessionToken: string | null = null;
+
+export const setApiSessionToken = (token: string | null) => {
+  inMemorySessionToken = token;
+};
+
 const getApiBase = () => {
   if (typeof window !== 'undefined') {
+    // If NEXT_PUBLIC_API_URL is explicitly set to an external backend, use it;
+    // otherwise route through same-origin /api proxy
+    const customApi = process.env.NEXT_PUBLIC_API_URL;
+    if (customApi) {
+      const trimmed = customApi.replace(/\/$/, '');
+      return trimmed.endsWith('/api') ? trimmed : `${trimmed}/api`;
+    }
     return '/api';
   }
   // Server runtime function context: resolve from bound service environment variable
-  const backend = process.env.BACKEND_API_URL;
+  const backend = process.env.BACKEND_API_URL || process.env.NEXT_PUBLIC_API_URL;
   if (backend) {
     const trimmed = backend.replace(/\/$/, '');
     return trimmed.endsWith('/api') ? trimmed : `${trimmed}/api`;
@@ -24,20 +37,36 @@ async function request<T = any>(endpoint: string, options: RequestInit = {}): Pr
   try {
     const baseUrl = getApiBase();
     const url = endpoint.startsWith('http') ? endpoint : `${baseUrl}${endpoint}`;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(inMemorySessionToken ? { Authorization: `Bearer ${inMemorySessionToken}` } : {}),
+      ...(options.headers as Record<string, string> || {}),
+    };
+
     const res = await fetch(url, {
       ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
-      credentials: 'include', // Include session cookie
+      headers,
+      credentials: 'include', // Include session cookie for same-origin or CORS
     });
 
     const body = await res.json().catch(() => ({}));
 
     if (!res.ok) {
+      let errorMessage = body.error;
+      if (!errorMessage) {
+        if (res.status === 500) {
+          errorMessage = 'Server error (500): The backend service is unreachable or database is disconnected. Please check BACKEND_API_URL and DATABASE_URL.';
+        } else if (res.status === 502 || res.status === 503 || res.status === 504) {
+          errorMessage = `Backend service unavailable (${res.status}). Please verify that the backend server is running and reachable.`;
+        } else if (res.status === 404) {
+          errorMessage = 'API endpoint not found (404). Check API URL routing configuration.';
+        } else {
+          errorMessage = `Request failed with status ${res.status}`;
+        }
+      }
+
       return {
-        error: body.error || `Request failed with status ${res.status}`,
+        error: errorMessage,
         code: body.code,
         status: res.status,
       };
@@ -69,17 +98,25 @@ export const api = {
     gender: string;
     publicKey?: string;
   }) => {
-    return request<{ message: string; user: User; token: string }>('/auth/register', {
+    const res = await request<{ message: string; user: User; token: string }>('/auth/register', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+    if (res.data?.token) {
+      inMemorySessionToken = res.data.token;
+    }
+    return res;
   },
 
   login: async (payload: { username: string; password: string[] }) => {
-    return request<{ message: string; user: User; token: string }>('/auth/login', {
+    const res = await request<{ message: string; user: User; token: string }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+    if (res.data?.token) {
+      inMemorySessionToken = res.data.token;
+    }
+    return res;
   },
 
   getMe: async () => {
@@ -87,9 +124,11 @@ export const api = {
   },
 
   logout: async () => {
-    return request<{ success: boolean }>('/auth/logout', {
+    const res = await request<{ success: boolean }>('/auth/logout', {
       method: 'POST',
     });
+    inMemorySessionToken = null;
+    return res;
   },
 
   getUserPublicKey: async (username: string) => {

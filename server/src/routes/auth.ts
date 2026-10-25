@@ -19,15 +19,21 @@ import { logger } from '../utils/logger.js';
 
 export const authRouter = Router();
 
+// Helper to resolve consistent cookie security options
+export function getSessionCookieOptions(expiresAt?: Date) {
+  const isCrossSite = process.env.ALLOW_CROSS_SITE_COOKIES === 'true';
+  return {
+    httpOnly: true,
+    secure: config.isProduction || isCrossSite,
+    sameSite: (isCrossSite ? 'none' : (config.isProduction ? 'strict' : 'lax')) as 'none' | 'strict' | 'lax',
+    path: '/',
+    ...(expiresAt ? { expires: expiresAt } : {}),
+  };
+}
+
 // Helper to set session cookie
 function setSessionCookie(res: Response, token: string, expiresAt: Date) {
-  res.cookie(SESSION_COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: config.isProduction, // HTTPS in production
-    sameSite: config.isProduction ? 'strict' : 'lax',
-    expires: expiresAt,
-    path: '/',
-  });
+  res.cookie(SESSION_COOKIE_NAME, token, getSessionCookieOptions(expiresAt));
 }
 
 /**
@@ -284,12 +290,7 @@ authRouter.post('/logout', authMiddleware, async (req: Request, res: Response): 
       presenceService.disconnectUser(req.user.canonicalUsername, 'Logged out');
     }
 
-    res.clearCookie(SESSION_COOKIE_NAME, {
-      httpOnly: true,
-      secure: config.isProduction,
-      sameSite: config.isProduction ? 'strict' : 'lax',
-      path: '/',
-    });
+    res.clearCookie(SESSION_COOKIE_NAME, getSessionCookieOptions());
 
     logger.info(`User logged out: ${req.user?.canonicalUsername}`);
     res.json({ success: true, message: 'Logged out successfully' });

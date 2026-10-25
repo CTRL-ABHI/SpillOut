@@ -7,8 +7,9 @@ import { accountCleanupService } from './services/account-cleanup.service.js';
 import { logger } from './utils/logger.js';
 import { prisma } from './db.js';
 
-async function main() {
-  const app = createApp();
+const app = createApp();
+
+export async function startServer() {
   const server = http.createServer(app);
 
   // Initialize WebSocket Server on path /ws
@@ -47,9 +48,18 @@ async function main() {
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+
+  return server;
 }
 
-main().catch((err) => {
-  logger.error('Fatal startup error', err);
-  process.exit(1);
-});
+// Only launch standalone HTTP and WebSocket listener if running directly (not in Vercel Serverless or test runner)
+if (!process.env.VERCEL && process.env.NODE_ENV !== 'test') {
+  startServer().catch((err) => {
+    logger.error('Fatal startup error', err);
+    process.exit(1);
+  });
+}
+
+export { app };
+export default app;
+
