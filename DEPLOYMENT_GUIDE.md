@@ -147,13 +147,20 @@ This safely creates the `User` and `Session` tables, along with all unique index
 
 ---
 
-### Step 5: Configure Environment Variables on Vercel
+### Step 5: Configure Vercel Root Directory & Environment Variables
 1. Open the [Vercel Dashboard](https://vercel.com) and click into your **SpillOut** project.
-2. Navigate to **Settings** → **Environment Variables**.
-3. Add the following two variables (select **Production**, **Preview**, and **Development**):
-   - **`BACKEND_API_URL`**: `https://spillout-api.onrender.com/api` *(Your Render URL followed by `/api`)*
-   - **`NEXT_PUBLIC_WS_URL`**: `wss://spillout-api.onrender.com/ws` *(Your Render URL starting with `wss://` and ending with `/ws`)*
-4. Click **Save**.
+2. **Set Root Directory to client (Crucial step)**:
+   - Go to **Settings** (top navigation bar) -> **General** (left sidebar).
+   - Scroll down to the **Root Directory** section.
+   - Click the **Edit** button.
+   - Type client into the field.
+   - Click **Save**.
+3. **Configure Environment Variables**:
+   - In the left sidebar, click **Environment Variables**.
+   - Add the following two variables (ensure **Production**, **Preview**, and **Development** are checked):
+     - **BACKEND_API_URL**: https://spillout-api.onrender.com/api *(Your Render backend URL followed by /api)*
+     - **NEXT_PUBLIC_WS_URL**: wss://spillout-api.onrender.com/ws *(Your Render backend URL with wss:// and ending with /ws)*
+   - Click **Save**.
 
 ---
 
