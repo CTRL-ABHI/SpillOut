@@ -3,8 +3,9 @@ import { sound } from './sound';
 import { CallState } from '../types';
 
 /**
- * WebRTC Voice Call Manager for SPILLOUT
- * Peer-to-peer audio transport with mandatory DTLS-SRTP encryption
+ * Robust WebRTC Voice Call Manager for SPILLOUT
+ * Peer-to-peer encrypted audio transport with DTLS-SRTP
+ * Full candidate buffering, ring timeouts, DOM audio playback, and TURN support.
  */
 
 export interface CallEvents {
@@ -13,13 +14,30 @@ export interface CallEvents {
   onIncomingCall: (fromUsername: string, callId: string) => void;
 }
 
-const RTC_CONFIG: RTCConfiguration = {
-  iceServers: [
+function getRtcConfig(): RTCConfiguration {
+  const iceServers: RTCIceServer[] = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
-  ],
-};
+    { urls: 'stun:stun.cloudflare.com:3478' },
+  ];
+
+  if (typeof window !== 'undefined') {
+    const turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
+    const turnUsername = process.env.NEXT_PUBLIC_TURN_USERNAME;
+    const turnCredential = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
+
+    if (turnUrl) {
+      iceServers.push({
+        urls: turnUrl,
+        username: turnUsername,
+        credential: turnCredential,
+      });
+    }
+  }
+
+  return { iceServers };
+}
 
 export class WebRTCVoiceManager {
   private pc: RTCPeerConnection | null = null;
@@ -30,30 +48,43 @@ export class WebRTCVoiceManager {
   private events: CallEvents | null = null;
   private isMuted: boolean = false;
   private remoteAudioElement: HTMLAudioElement | null = null;
+  private pendingCandidates: RTCIceCandidateInit[] = [];
+  private ringTimeout: any = null;
 
   public init(events: CallEvents): () => void {
     this.events = events;
 
-    if (typeof window !== 'undefined') {
-      this.remoteAudioElement = document.createElement('audio');
-      this.remoteAudioElement.autoplay = true;
-    }
+    this.ensureAudioElement();
 
     // Subscribe to WebSocket WebRTC signals
-    const unsubscribe = socket.on('webrtc-signal', async (payload: any) => {
+    const unsubscribeSignal = socket.on('webrtc-signal', async (payload: any) => {
       await this.handleSignal(payload);
     });
 
-    const unsubscribeUndelivered = socket.on('call-failed', (payload: any) => {
+    const unsubscribeFailed = socket.on('call-failed', (payload: any) => {
       this.cleanup();
-      this.setState('ended', payload?.reason || 'Call failed');
+      this.setState('ended', payload?.reason || 'User is unavailable');
     });
 
     return () => {
-      unsubscribe();
-      unsubscribeUndelivered();
+      unsubscribeSignal();
+      unsubscribeFailed();
       this.cleanup();
     };
+  }
+
+  private ensureAudioElement(): void {
+    if (typeof document === 'undefined') return;
+
+    let el = document.getElementById('spillout-remote-audio') as HTMLAudioElement;
+    if (!el) {
+      el = document.createElement('audio');
+      el.id = 'spillout-remote-audio';
+      el.autoplay = true;
+      el.style.display = 'none';
+      document.body.appendChild(el);
+    }
+    this.remoteAudioElement = el;
   }
 
   private setState(state: CallState, error?: string): void {
@@ -64,7 +95,7 @@ export class WebRTCVoiceManager {
   }
 
   /**
-   * Acquire local microphone stream
+   * Acquire local microphone stream with speech optimization filters
    */
   private async getMicrophone(): Promise<MediaStream> {
     if (this.localStream) {
@@ -85,14 +116,14 @@ export class WebRTCVoiceManager {
       console.error('Microphone access denied or unavailable', err);
       throw new Error(
         err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError'
-          ? 'Microphone permission denied. Please allow microphone access in browser settings.'
-          : 'Microphone hardware error.'
+          ? 'Microphone permission denied. Please allow microphone access in your browser.'
+          : 'Microphone hardware error or unavailable.'
       );
     }
   }
 
   /**
-   * Start an outgoing call
+   * Start an outgoing voice call with 45s ringing timeout
    */
   public async startCall(targetUsername: string): Promise<void> {
     this.cleanup();
@@ -108,6 +139,16 @@ export class WebRTCVoiceManager {
       socket.sendSignal(targetUsername, 'call-invite', {
         callId: this.currentCallId,
       });
+
+      // 45-second unanswered call timeout
+      this.ringTimeout = setTimeout(() => {
+        if (this.currentState === 'ringing-outgoing') {
+          sound.stopRingtone();
+          sound.playCallEnd();
+          this.endCall();
+          this.setState('ended', 'No answer from recipient');
+        }
+      }, 45000);
     } catch (err: any) {
       this.cleanup();
       this.setState('ended', err.message);
@@ -118,6 +159,7 @@ export class WebRTCVoiceManager {
    * Accept an incoming call
    */
   public async acceptCall(callerUsername: string, callId: string): Promise<void> {
+    this.clearRingTimeout();
     sound.stopRingtone();
     this.currentPeer = callerUsername;
     this.currentCallId = callId;
@@ -127,7 +169,7 @@ export class WebRTCVoiceManager {
       const stream = await this.getMicrophone();
       this.setupPeerConnection();
 
-      // Add audio tracks to peer connection
+      // Add local audio tracks to peer connection
       for (const track of stream.getAudioTracks()) {
         this.pc?.addTrack(track, stream);
       }
@@ -145,6 +187,7 @@ export class WebRTCVoiceManager {
    * Decline an incoming call
    */
   public declineCall(callerUsername: string, callId: string): void {
+    this.clearRingTimeout();
     sound.stopRingtone();
     socket.sendSignal(callerUsername, 'call-decline', { callId });
     this.cleanup();
@@ -155,6 +198,7 @@ export class WebRTCVoiceManager {
    * End the current active call
    */
   public endCall(): void {
+    this.clearRingTimeout();
     if (this.currentPeer && this.currentCallId) {
       socket.sendSignal(this.currentPeer, 'call-end', {
         callId: this.currentCallId,
@@ -178,13 +222,23 @@ export class WebRTCVoiceManager {
   }
 
   private setupPeerConnection(): void {
-    this.pc = new RTCPeerConnection(RTC_CONFIG);
+    if (this.pc) {
+      try {
+        this.pc.close();
+      } catch {}
+    }
+
+    this.pendingCandidates = [];
+    this.ensureAudioElement();
+
+    const config = getRtcConfig();
+    this.pc = new RTCPeerConnection(config);
 
     this.pc.onicecandidate = (event) => {
       if (event.candidate && this.currentPeer && this.currentCallId) {
         socket.sendSignal(this.currentPeer, 'webrtc-ice', {
           callId: this.currentCallId,
-          candidate: event.candidate,
+          candidate: event.candidate.toJSON ? event.candidate.toJSON() : event.candidate,
         });
       }
     };
@@ -194,7 +248,9 @@ export class WebRTCVoiceManager {
         const remoteStream = event.streams[0];
         if (this.remoteAudioElement) {
           this.remoteAudioElement.srcObject = remoteStream;
-          this.remoteAudioElement.play().catch(() => {});
+          this.remoteAudioElement.play().catch((playErr) => {
+            console.warn('Audio auto-play caught:', playErr);
+          });
         }
         if (this.events) {
           this.events.onRemoteStream(remoteStream);
@@ -206,14 +262,48 @@ export class WebRTCVoiceManager {
       if (!this.pc) return;
       const state = this.pc.connectionState;
       if (state === 'connected') {
+        this.clearRingTimeout();
         sound.stopRingtone();
         this.setState('connected');
-      } else if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+      } else if (state === 'failed') {
+        this.clearRingTimeout();
+        this.cleanup();
+        this.setState('ended', 'Direct audio connection failed. Peer network may require TURN relay.');
+      } else if (state === 'disconnected' || state === 'closed') {
         if (this.currentState === 'connected') {
           this.endCall();
         }
       }
     };
+
+    this.pc.oniceconnectionstatechange = () => {
+      if (!this.pc) return;
+      const iceState = this.pc.iceConnectionState;
+      if (iceState === 'connected' || iceState === 'completed') {
+        this.clearRingTimeout();
+        sound.stopRingtone();
+        this.setState('connected');
+      } else if (iceState === 'failed') {
+        this.clearRingTimeout();
+        this.cleanup();
+        this.setState('ended', 'ICE connectivity check failed.');
+      }
+    };
+  }
+
+  private async drainPendingCandidates(): Promise<void> {
+    if (!this.pc || !this.pc.remoteDescription) return;
+
+    while (this.pendingCandidates.length > 0) {
+      const cand = this.pendingCandidates.shift();
+      if (cand) {
+        try {
+          await this.pc.addIceCandidate(new RTCIceCandidate(cand));
+        } catch (err) {
+          console.warn('Could not add queued ICE candidate', err);
+        }
+      }
+    }
   }
 
   private async handleSignal(payload: any): Promise<void> {
@@ -238,6 +328,7 @@ export class WebRTCVoiceManager {
 
       case 'call-accept': {
         if (this.currentState === 'ringing-outgoing' && this.currentPeer === fromUsername) {
+          this.clearRingTimeout();
           sound.stopRingtone();
           this.setState('connecting');
           this.setupPeerConnection();
@@ -247,7 +338,7 @@ export class WebRTCVoiceManager {
             this.pc?.addTrack(track, stream);
           }
 
-          // Create offer as the caller
+          // Create offer as caller
           const offer = await this.pc!.createOffer({
             offerToReceiveAudio: true,
           });
@@ -262,10 +353,24 @@ export class WebRTCVoiceManager {
       }
 
       case 'webrtc-offer': {
-        if (this.pc && payload.sdp) {
-          await this.pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-          const answer = await this.pc.createAnswer();
-          await this.pc.setLocalDescription(answer);
+        if (payload.sdp) {
+          if (!this.pc) {
+            this.setupPeerConnection();
+          }
+
+          const activePc = this.pc;
+          if (activePc) {
+            const stream = await this.getMicrophone();
+            for (const track of stream.getAudioTracks()) {
+              activePc.addTrack(track, stream);
+            }
+          }
+
+          await this.pc!.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          await this.drainPendingCandidates();
+
+          const answer = await this.pc!.createAnswer();
+          await this.pc!.setLocalDescription(answer);
 
           socket.sendSignal(fromUsername, 'webrtc-answer', {
             callId,
@@ -278,22 +383,29 @@ export class WebRTCVoiceManager {
       case 'webrtc-answer': {
         if (this.pc && payload.sdp) {
           await this.pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          await this.drainPendingCandidates();
         }
         break;
       }
 
       case 'webrtc-ice': {
-        if (this.pc && payload.candidate) {
-          try {
-            await this.pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
-          } catch (err) {
-            console.warn('Could not add ICE candidate', err);
+        if (payload.candidate) {
+          if (this.pc && this.pc.remoteDescription) {
+            try {
+              await this.pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+            } catch (err) {
+              console.warn('Could not add ICE candidate', err);
+            }
+          } else {
+            // Buffer candidate until remote description is set
+            this.pendingCandidates.push(payload.candidate);
           }
         }
         break;
       }
 
       case 'call-decline': {
+        this.clearRingTimeout();
         sound.stopRingtone();
         sound.playCallEnd();
         this.cleanup();
@@ -302,6 +414,7 @@ export class WebRTCVoiceManager {
       }
 
       case 'call-busy': {
+        this.clearRingTimeout();
         sound.stopRingtone();
         sound.playCallEnd();
         this.cleanup();
@@ -310,6 +423,7 @@ export class WebRTCVoiceManager {
       }
 
       case 'call-end': {
+        this.clearRingTimeout();
         sound.stopRingtone();
         sound.playCallEnd();
         this.cleanup();
@@ -319,8 +433,18 @@ export class WebRTCVoiceManager {
     }
   }
 
+  private clearRingTimeout(): void {
+    if (this.ringTimeout) {
+      clearTimeout(this.ringTimeout);
+      this.ringTimeout = null;
+    }
+  }
+
   public cleanup(): void {
+    this.clearRingTimeout();
     sound.stopRingtone();
+    this.pendingCandidates = [];
+
     if (this.pc) {
       try {
         this.pc.close();

@@ -6,6 +6,7 @@ import { config } from './config.js';
 import { ensureDatabase, prisma } from './db.js';
 import { authRouter } from './routes/auth.js';
 import { accountRouter } from './routes/account.js';
+import { messageRouter } from './routes/message.js';
 import { logger } from './utils/logger.js';
 
 export function createApp(): Express {
@@ -93,6 +94,8 @@ export function createApp(): Express {
   app.use('/auth', authRouter);
   app.use('/api/account', accountRouter);
   app.use('/account', accountRouter);
+  app.use('/api/messages', messageRouter);
+  app.use('/messages', messageRouter);
 
   // 8. 404 handler
   app.use((_req: Request, res: Response) => {

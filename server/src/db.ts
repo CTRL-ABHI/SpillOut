@@ -74,11 +74,17 @@ export async function ensureDatabase(): Promise<void> {
             "canonicalUsername" VARCHAR(10) NOT NULL UNIQUE,
             "passwordHash" TEXT NOT NULL,
             "gender" "Gender" NOT NULL,
+            "avatarId" VARCHAR(32),
             "publicKey" TEXT,
             "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
             "lastActivityAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
           );
         `);
+
+        // Ensure avatarId column exists if table was created previously
+        await prisma.$executeRawUnsafe(`
+          ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "avatarId" VARCHAR(32);
+        `).catch(() => {});
 
         await prisma.$executeRawUnsafe(`
           CREATE TABLE IF NOT EXISTS "Session" (
@@ -90,10 +96,31 @@ export async function ensureDatabase(): Promise<void> {
           );
         `);
 
+        await prisma.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "Message" (
+            "id" TEXT PRIMARY KEY,
+            "conversationId" TEXT NOT NULL,
+            "senderCanonical" TEXT NOT NULL,
+            "recipientCanonical" TEXT NOT NULL,
+            "ciphertext" TEXT NOT NULL,
+            "iv" TEXT NOT NULL,
+            "tag" TEXT,
+            "senderEphemeralPublicKey" TEXT NOT NULL,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "expiresAt" TIMESTAMP(3) NOT NULL,
+            "status" TEXT NOT NULL DEFAULT 'sent',
+            "deliveredAt" TIMESTAMP(3)
+          );
+        `);
+
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "User_canonicalUsername_idx" ON "User"("canonicalUsername");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "User_lastActivityAt_idx" ON "User"("lastActivityAt");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Session_token_idx" ON "Session"("token");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Session_userId_idx" ON "Session"("userId");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Message_recipientCanonical_expiresAt_idx" ON "Message"("recipientCanonical", "expiresAt");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Message_conversationId_expiresAt_idx" ON "Message"("conversationId", "expiresAt");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Message_expiresAt_idx" ON "Message"("expiresAt");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Message_senderCanonical_createdAt_idx" ON "Message"("senderCanonical", "createdAt");`).catch(() => {});
       } else {
         await prisma.$executeRawUnsafe(`
           CREATE TABLE IF NOT EXISTS "User" (
@@ -102,11 +129,23 @@ export async function ensureDatabase(): Promise<void> {
             "canonicalUsername" TEXT NOT NULL UNIQUE,
             "passwordHash" TEXT NOT NULL,
             "gender" TEXT NOT NULL,
+            "avatarId" TEXT,
             "publicKey" TEXT,
             "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             "lastActivityAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
           );
         `);
+
+        // Check and add avatarId column in SQLite if missing
+        try {
+          const tableInfo: any[] = await prisma.$queryRawUnsafe(`PRAGMA table_info("User");`);
+          const hasAvatarId = tableInfo.some((col: any) => col.name === 'avatarId');
+          if (!hasAvatarId) {
+            await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN "avatarId" TEXT;`);
+          }
+        } catch {
+          // Ignore pragma check error
+        }
 
         await prisma.$executeRawUnsafe(`
           CREATE TABLE IF NOT EXISTS "Session" (
@@ -119,12 +158,33 @@ export async function ensureDatabase(): Promise<void> {
           );
         `);
 
+        await prisma.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "Message" (
+            "id" TEXT PRIMARY KEY,
+            "conversationId" TEXT NOT NULL,
+            "senderCanonical" TEXT NOT NULL,
+            "recipientCanonical" TEXT NOT NULL,
+            "ciphertext" TEXT NOT NULL,
+            "iv" TEXT NOT NULL,
+            "tag" TEXT,
+            "senderEphemeralPublicKey" TEXT NOT NULL,
+            "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "expiresAt" DATETIME NOT NULL,
+            "status" TEXT NOT NULL DEFAULT 'sent',
+            "deliveredAt" DATETIME
+          );
+        `);
+
         await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "User_canonicalUsername_key" ON "User"("canonicalUsername");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "User_canonicalUsername_idx" ON "User"("canonicalUsername");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "User_lastActivityAt_idx" ON "User"("lastActivityAt");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "Session_token_key" ON "Session"("token");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Session_token_idx" ON "Session"("token");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Session_userId_idx" ON "Session"("userId");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Message_recipientCanonical_expiresAt_idx" ON "Message"("recipientCanonical", "expiresAt");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Message_conversationId_expiresAt_idx" ON "Message"("conversationId", "expiresAt");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Message_expiresAt_idx" ON "Message"("expiresAt");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Message_senderCanonical_createdAt_idx" ON "Message"("senderCanonical", "createdAt");`).catch(() => {});
       }
     } catch (err: any) {
       console.warn('[Database] Auto-migration check:', err?.message || err);

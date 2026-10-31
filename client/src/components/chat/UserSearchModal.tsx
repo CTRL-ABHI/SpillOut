@@ -5,6 +5,7 @@ import { api } from '@/lib/api';
 import { socket } from '@/lib/socket';
 import { generateSafetyFingerprint, getOrCreateIdentityKeyPair } from '@/lib/crypto';
 import { ActiveConversation } from '@/types';
+import { DoodleAvatar } from '../doodles/avatars/DoodleAvatar';
 import { Search, X, Loader2, AlertCircle, ArrowRight } from 'lucide-react';
 
 interface UserSearchModalProps {
@@ -26,6 +27,7 @@ export const UserSearchModal: React.FC<UserSearchModalProps> = ({
   const [resolvedUser, setResolvedUser] = useState<{
     username: string;
     canonicalUsername: string;
+    avatarId?: string | null;
     publicKey: string | null;
     isOnline: boolean;
   } | null>(null);
@@ -39,9 +41,6 @@ export const UserSearchModal: React.FC<UserSearchModalProps> = ({
       if (target === resolvedUser.canonicalUsername.toLowerCase().trim()) {
         const isOnline = !!payload?.isOnline;
         setResolvedUser((prev) => (prev ? { ...prev, isOnline } : null));
-        if (isOnline && error && error.includes('currently offline')) {
-          setError(null);
-        }
       }
     });
 
@@ -50,9 +49,6 @@ export const UserSearchModal: React.FC<UserSearchModalProps> = ({
       if (target === resolvedUser.canonicalUsername.toLowerCase().trim()) {
         const isOnline = !!payload?.isOnline;
         setResolvedUser((prev) => (prev ? { ...prev, isOnline } : null));
-        if (isOnline && error && error.includes('currently offline')) {
-          setError(null);
-        }
       }
     });
 
@@ -63,7 +59,7 @@ export const UserSearchModal: React.FC<UserSearchModalProps> = ({
       unsub();
       unsubStatus();
     };
-  }, [resolvedUser, error]);
+  }, [resolvedUser]);
 
   if (!isOpen) return null;
 
@@ -103,11 +99,6 @@ export const UserSearchModal: React.FC<UserSearchModalProps> = ({
   const handleStartChat = async () => {
     if (!resolvedUser) return;
 
-    if (!resolvedUser.isOnline) {
-      setError(`@${resolvedUser.username} is currently offline. SpillOut requires both users to be online for live encrypted communication.`);
-      return;
-    }
-
     try {
       let keyFingerprint: string | undefined;
       if (resolvedUser.publicKey) {
@@ -118,6 +109,7 @@ export const UserSearchModal: React.FC<UserSearchModalProps> = ({
       onStartConversation({
         username: resolvedUser.username,
         canonicalUsername: resolvedUser.canonicalUsername,
+        avatarId: resolvedUser.avatarId,
         publicKey: resolvedUser.publicKey,
         isOnline: resolvedUser.isOnline,
         unreadCount: 0,
@@ -149,7 +141,7 @@ export const UserSearchModal: React.FC<UserSearchModalProps> = ({
         </div>
 
         <p className="text-xs text-neutral-500 leading-relaxed">
-          Enter the exact username of the person you wish to contact. Both participants must be online for real-time ephemeral exchange.
+          Enter the exact username of the person you wish to contact. Messages are end-to-end encrypted and retained for 24 hours.
         </p>
 
         <form onSubmit={handleSearch} className="flex gap-2">
@@ -182,21 +174,20 @@ export const UserSearchModal: React.FC<UserSearchModalProps> = ({
           <div className="p-4 rounded-2xl bg-neutral-50 border border-neutral-300 space-y-3 animate-fade-in">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="w-10 h-10 rounded-full bg-white border border-neutral-300 flex items-center justify-center font-mono font-bold text-neutral-900 text-sm shadow-sm">
-                  {resolvedUser.username.slice(0, 2).toUpperCase()}
-                </div>
+                <DoodleAvatar
+                  avatarId={resolvedUser.avatarId}
+                  username={resolvedUser.username}
+                  size="md"
+                  isOnline={resolvedUser.isOnline}
+                  showPresence={true}
+                />
                 <div>
                   <h4 className="text-sm font-bold font-mono text-neutral-900">
                     @{resolvedUser.username}
                   </h4>
                   <div className="flex items-center gap-1.5 mt-0.5">
-                    <span
-                      className={`w-2 h-2 rounded-full ${
-                        resolvedUser.isOnline ? 'bg-neutral-900' : 'bg-neutral-300'
-                      }`}
-                    />
                     <span className="text-[11px] text-neutral-500 font-mono">
-                      {resolvedUser.isOnline ? 'Online • Ready for E2EE' : 'Offline'}
+                      {resolvedUser.isOnline ? 'Online • Ready for live call' : 'Offline • 24h message queue active'}
                     </span>
                   </div>
                 </div>
@@ -204,11 +195,11 @@ export const UserSearchModal: React.FC<UserSearchModalProps> = ({
 
               {resolvedUser.isOnline ? (
                 <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-neutral-900 text-white font-bold">
-                  Ready
+                  Online
                 </span>
               ) : (
-                <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-neutral-200 text-neutral-600">
-                  Offline
+                <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-neutral-200 text-neutral-700 font-bold">
+                  24h Queue
                 </span>
               )}
             </div>
@@ -216,10 +207,9 @@ export const UserSearchModal: React.FC<UserSearchModalProps> = ({
             <button
               type="button"
               onClick={handleStartChat}
-              disabled={!resolvedUser.isOnline}
-              className="w-full py-2.5 px-4 rounded-xl bg-neutral-900 hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-xs transition shadow-sm flex items-center justify-center gap-1.5 active:scale-[0.99]"
+              className="w-full py-2.5 px-4 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white font-bold text-xs transition shadow-sm flex items-center justify-center gap-1.5 active:scale-[0.99]"
             >
-              <span>Initialize Encrypted Chat</span>
+              <span>Open Encrypted Chat</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>

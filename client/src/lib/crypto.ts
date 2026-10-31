@@ -7,15 +7,107 @@
  * - Symmetric Encryption: AES-GCM (256-bit key, 96-bit random IV, 128-bit authentication tag)
  * - Key Fingerprints: SHA-256 digest of participating public keys for safety number verification
  *
- * Memory Isolation:
- * - Ephemeral keys and derived session keys exist ONLY in runtime JavaScript memory.
- * - ZERO persistence to localStorage, sessionStorage, IndexedDB, or cookies.
+ * Device-Local Key Management:
+ * - Cryptographic key pairs are securely stored device-locally in IndexedDB (non-extractable across origins).
+ * - Private keys NEVER touch the backend or network.
+ * - Supports 24-hour retention across logouts and browser sessions on the user's authenticating device.
  */
 
-// Memory cache of ephemeral keys for current browser session
+// Memory cache of identity keys for active browser runtime
 let localIdentityKeyPair: CryptoKeyPair | null = null;
 let localPublicKeyBase64: string | null = null;
+let activeCanonicalUsername: string | null = null;
 const derivedKeyCache = new Map<string, CryptoKey>();
+
+const DB_NAME = 'spillout_secure_keystore';
+const DB_VERSION = 1;
+const STORE_NAME = 'identity_keys';
+
+function openKeyDatabase(): Promise<IDBDatabase | null> {
+  if (typeof window === 'undefined' || !window.indexedDB) {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    try {
+      const request = window.indexedDB.open(DB_NAME, DB_VERSION);
+
+      request.onupgradeneeded = (event: IDBVersionChangeEvent) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          db.createObjectStore(STORE_NAME);
+        }
+      };
+
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => {
+        console.warn('Could not open IndexedDB key store, falling back to session memory');
+        resolve(null);
+      };
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function loadDeviceKey(canonicalUsername: string): Promise<{ keyPair: CryptoKeyPair; publicKeyBase64: string } | null> {
+  const db = await openKeyDatabase();
+  if (!db) return null;
+
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.get(`id_${canonicalUsername}`);
+
+      req.onsuccess = () => {
+        if (req.result && req.result.keyPair && req.result.publicKeyBase64) {
+          resolve(req.result);
+        } else {
+          resolve(null);
+        }
+      };
+
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function saveDeviceKey(canonicalUsername: string, keyPair: CryptoKeyPair, publicKeyBase64: string): Promise<void> {
+  const db = await openKeyDatabase();
+  if (!db) return;
+
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      store.put({ keyPair, publicKeyBase64 }, `id_${canonicalUsername}`);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
+
+export async function deleteDeviceKey(canonicalUsername: string): Promise<void> {
+  const db = await openKeyDatabase();
+  if (!db) return;
+
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      store.delete(`id_${canonicalUsername}`);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -36,27 +128,44 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 }
 
 /**
- * Initialize or get local identity key pair
+ * Initialize or retrieve local ECDH identity key pair for the authenticated user.
+ * Recovers persisted device key from IndexedDB to maintain decryptability across logouts and browser sessions.
  */
-export async function getOrCreateIdentityKeyPair(): Promise<{
+export async function getOrCreateIdentityKeyPair(canonicalUsername?: string): Promise<{
   keyPair: CryptoKeyPair;
   publicKeyBase64: string;
 }> {
-  if (localIdentityKeyPair && localPublicKeyBase64) {
+  const canonical = (canonicalUsername || activeCanonicalUsername || 'default_user').toLowerCase().trim();
+
+  if (localIdentityKeyPair && localPublicKeyBase64 && activeCanonicalUsername === canonical) {
     return { keyPair: localIdentityKeyPair, publicKeyBase64: localPublicKeyBase64 };
   }
 
+  // 1. Attempt to restore from device-local IndexedDB
+  const stored = await loadDeviceKey(canonical);
+  if (stored) {
+    localIdentityKeyPair = stored.keyPair;
+    localPublicKeyBase64 = stored.publicKeyBase64;
+    activeCanonicalUsername = canonical;
+    return stored;
+  }
+
+  // 2. Generate new NIST P-256 ECDH KeyPair on this device
   localIdentityKeyPair = await window.crypto.subtle.generateKey(
     {
       name: 'ECDH',
       namedCurve: 'P-256',
     },
-    true, // Extractable so public key can be shared
+    true, // Extractable public key for key establishment
     ['deriveKey', 'deriveBits']
   );
 
   const rawPublic = await window.crypto.subtle.exportKey('raw', localIdentityKeyPair.publicKey);
   localPublicKeyBase64 = arrayBufferToBase64(rawPublic);
+  activeCanonicalUsername = canonical;
+
+  // 3. Persist to device-local IndexedDB for 24-hour message decryptability
+  await saveDeviceKey(canonical, localIdentityKeyPair, localPublicKeyBase64);
 
   return { keyPair: localIdentityKeyPair, publicKeyBase64: localPublicKeyBase64 };
 }
@@ -90,7 +199,7 @@ export async function deriveSharedSessionKey(peerPublicKeyBase64: string): Promi
   const { keyPair } = await getOrCreateIdentityKeyPair();
   const peerCryptoKey = await importPeerPublicKey(peerPublicKeyBase64);
 
-  // 1. Compute ECDH shared bits
+  // 1. Compute ECDH shared bits (NIST P-256)
   const sharedBits = await window.crypto.subtle.deriveBits(
     {
       name: 'ECDH',
@@ -114,7 +223,7 @@ export async function deriveSharedSessionKey(peerPublicKeyBase64: string): Promi
     {
       name: 'HKDF',
       hash: 'SHA-256',
-      salt: new Uint8Array(), // Domain separation
+      salt: new Uint8Array(),
       info: new TextEncoder().encode('SPILLOUT_E2EE_v1'),
     },
     hkdfKey,
@@ -144,7 +253,7 @@ export async function encryptTextMessage(
   const { publicKeyBase64 } = await getOrCreateIdentityKeyPair();
   const sessionKey = await deriveSharedSessionKey(peerPublicKeyBase64);
 
-  // Generate fresh 96-bit (12 bytes) IV for every message
+  // Fresh 96-bit (12 bytes) IV for every message
   const iv = window.crypto.getRandomValues(new Uint8Array(12));
   const encodedText = new TextEncoder().encode(plaintext);
 
@@ -171,9 +280,9 @@ export async function encryptTextMessage(
 export async function decryptTextMessage(
   ciphertextBase64: string,
   ivBase64: string,
-  senderPublicKeyBase64: string
+  peerPublicKeyBase64: string
 ): Promise<string> {
-  const sessionKey = await deriveSharedSessionKey(senderPublicKeyBase64);
+  const sessionKey = await deriveSharedSessionKey(peerPublicKeyBase64);
   const iv = new Uint8Array(base64ToArrayBuffer(ivBase64));
   const ciphertextBuffer = base64ToArrayBuffer(ciphertextBase64);
 
@@ -191,6 +300,25 @@ export async function decryptTextMessage(
 }
 
 /**
+ * Safe decryption wrapper that gracefully detects and flags ciphertext encrypted for other device sessions.
+ */
+export async function tryDecryptTextMessage(
+  ciphertextBase64: string,
+  ivBase64: string,
+  peerPublicKeyBase64: string
+): Promise<{ text: string; isDecrypted: boolean }> {
+  try {
+    const text = await decryptTextMessage(ciphertextBase64, ivBase64, peerPublicKeyBase64);
+    return { text, isDecrypted: true };
+  } catch (err) {
+    return {
+      text: '[Encrypted message - Key established on another device session]',
+      isDecrypted: false,
+    };
+  }
+}
+
+/**
  * Generate a deterministic safety verification code (fingerprint)
  * based on the two participating public keys
  */
@@ -198,7 +326,6 @@ export async function generateSafetyFingerprint(
   localKeyBase64: string,
   remoteKeyBase64: string
 ): Promise<string> {
-  // Sort keys alphabetically so both participants see identical fingerprint
   const sorted = [localKeyBase64, remoteKeyBase64].sort().join('::');
   const digest = await window.crypto.subtle.digest(
     'SHA-256',
@@ -209,15 +336,15 @@ export async function generateSafetyFingerprint(
     .map((b) => b.toString(16).padStart(2, '0').toUpperCase())
     .join('');
 
-  // Format into 4 chunks: XXXX-XXXX-XXXX-XXXX
   return `${hex.slice(0, 4)}-${hex.slice(4, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}`;
 }
 
 /**
- * Completely purge cryptographic state from application memory (called on logout/cleanup)
+ * Purge active runtime cryptographic session cache from memory on logout.
  */
 export function purgeCryptographicMemory(): void {
   localIdentityKeyPair = null;
   localPublicKeyBase64 = null;
+  activeCanonicalUsername = null;
   derivedKeyCache.clear();
 }

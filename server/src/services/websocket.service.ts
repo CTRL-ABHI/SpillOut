@@ -4,6 +4,7 @@ import { prisma } from '../db.js';
 import { SESSION_COOKIE_NAME } from '../middleware/auth.middleware.js';
 import { presenceService, ConnectedClient } from './presence.service.js';
 import { accountCleanupService } from './account-cleanup.service.js';
+import { messageService } from './message.service.js';
 import { logger } from '../utils/logger.js';
 
 interface WSMessage {
@@ -123,6 +124,7 @@ export function setupWebSocketServer(wss: WebSocketServer): void {
             payload: {
               username: session.user.username,
               canonicalUsername: canonical,
+              avatarId: session.user.avatarId,
             },
           })
         );
@@ -137,6 +139,36 @@ export function setupWebSocketServer(wss: WebSocketServer): void {
             },
           })
         );
+
+        // C. Deliver any pending unexpired messages that arrived while offline
+        try {
+          const pending = await messageService.getPendingMessagesForRecipient(canonical);
+          if (pending.length > 0) {
+            for (const m of pending) {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(
+                  JSON.stringify({
+                    type: 'e2ee-message',
+                    payload: {
+                      id: m.id,
+                      senderUsername: m.senderCanonical,
+                      senderCanonical: m.senderCanonical,
+                      recipientCanonical: m.recipientCanonical,
+                      ciphertext: m.ciphertext,
+                      iv: m.iv,
+                      tag: m.tag,
+                      senderEphemeralPublicKey: m.senderEphemeralPublicKey,
+                      timestamp: m.createdAt.toISOString(),
+                      status: m.status,
+                    },
+                  })
+                );
+              }
+            }
+          }
+        } catch (queueErr) {
+          logger.warn('Error delivering pending messages on connection', queueErr);
+        }
 
         return true;
       } catch (err) {
@@ -207,8 +239,7 @@ export function setupWebSocketServer(wss: WebSocketServer): void {
           }
         };
 
-        // 4. End-to-End Encrypted Message Relay
-        // Strictly ephemeral: never saved to DB or logs
+        // 4. Reliable End-to-End Encrypted Messaging (24-Hour Expiration & Delivery Queue)
         if (type === 'send-e2ee-message') {
           const recipientCanonical = payload?.recipientUsername?.toLowerCase()?.trim();
           if (!recipientCanonical) {
@@ -221,61 +252,116 @@ export function setupWebSocketServer(wss: WebSocketServer): void {
             return;
           }
 
-          // Check if recipient is online
-          if (!presenceService.isOnline(recipientCanonical)) {
+          const messageId = payload.id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+          // Verify recipient exists in database
+          const recipientUser = await prisma.user.findUnique({
+            where: { canonicalUsername: recipientCanonical },
+            select: { id: true, username: true, canonicalUsername: true },
+          });
+
+          if (!recipientUser) {
             ws.send(
               JSON.stringify({
-                type: 'message-undeliverable',
+                type: 'message-failed',
                 payload: {
+                  messageId,
                   recipient: payload.recipientUsername,
-                  reason: 'Recipient is offline. SPILLOUT does not retain or queue messages for offline users.',
+                  reason: 'Recipient username does not exist.',
                 },
               })
             );
             return;
           }
 
-          const recipientSockets = presenceService.getSockets(recipientCanonical);
-          const relayPayload = {
-            type: 'e2ee-message',
-            payload: {
-              senderUsername: currentClient.username,
-              senderCanonical: currentClient.canonicalUsername,
-              recipientCanonical,
-              ciphertext: payload.ciphertext,
-              iv: payload.iv,
-              tag: payload.tag,
-              senderEphemeralPublicKey: payload.senderEphemeralPublicKey,
-              timestamp: new Date().toISOString(),
-            },
-          };
+          // Persist encrypted ciphertext with 24-hour expiration window
+          const stored = await messageService.createMessage({
+            id: messageId,
+            senderCanonical: currentClient.canonicalUsername,
+            recipientCanonical,
+            ciphertext: payload.ciphertext,
+            iv: payload.iv,
+            tag: payload.tag,
+            senderEphemeralPublicKey: payload.senderEphemeralPublicKey,
+          });
 
-          const serialized = JSON.stringify(relayPayload);
-          for (const s of recipientSockets) {
-            if (s.readyState === WebSocket.OPEN) {
-              s.send(serialized);
-            }
-          }
-
-          // Acknowledge relay to sender
+          // Confirm to sender that message is accepted and stored (status: 'sent')
           ws.send(
             JSON.stringify({
-              type: 'message-relayed',
+              type: 'message-sent',
               payload: {
-                recipient: payload.recipientUsername,
-                timestamp: relayPayload.payload.timestamp,
+                messageId: stored.id,
+                recipient: recipientUser.username,
+                recipientCanonical,
+                timestamp: stored.createdAt.toISOString(),
+                expiresAt: stored.expiresAt.toISOString(),
+                status: 'sent',
               },
             })
           );
 
-          // Update qualifying activity on chat
+          // If recipient is currently online, dispatch immediately to recipient's open sockets
+          if (presenceService.isOnline(recipientCanonical)) {
+            const recipientSockets = presenceService.getSockets(recipientCanonical);
+            const relayMessage = JSON.stringify({
+              type: 'e2ee-message',
+              payload: {
+                id: stored.id,
+                senderUsername: currentClient.username,
+                senderCanonical: currentClient.canonicalUsername,
+                recipientCanonical,
+                ciphertext: stored.ciphertext,
+                iv: stored.iv,
+                tag: stored.tag,
+                senderEphemeralPublicKey: stored.senderEphemeralPublicKey,
+                timestamp: stored.createdAt.toISOString(),
+                status: stored.status,
+              },
+            });
+
+            for (const s of recipientSockets) {
+              if (s.readyState === WebSocket.OPEN) {
+                s.send(relayMessage);
+              }
+            }
+          }
+
+          // Update qualifying activity on chat action
           markQualifyingActivity();
           return;
         }
 
-        // 5. WebRTC Signaling for Encrypted Voice Calls
+        // 5. Message Delivery Acknowledgement (Recipient client -> Server -> Sender)
+        if (type === 'message-ack') {
+          const messageId = payload?.messageId;
+          if (messageId) {
+            const updated = await messageService.markMessageDelivered(messageId, currentClient.canonicalUsername);
+            if (updated) {
+              // Notify sender of successful delivery
+              const senderSockets = presenceService.getSockets(updated.senderCanonical);
+              const deliveredNotice = JSON.stringify({
+                type: 'message-delivered',
+                payload: {
+                  messageId: updated.id,
+                  recipientCanonical: currentClient.canonicalUsername,
+                  deliveredAt: updated.deliveredAt?.toISOString() || new Date().toISOString(),
+                  status: 'delivered',
+                },
+              });
+
+              for (const s of senderSockets) {
+                if (s.readyState === WebSocket.OPEN) {
+                  s.send(deliveredNotice);
+                }
+              }
+            }
+          }
+          return;
+        }
+
+        // 6. WebRTC Signaling for Encrypted Voice Calls
         if (type === 'webrtc-signal') {
-          const signalType = payload?.signalType; // call-invite, call-accept, call-decline, call-busy, call-end, offer, answer, ice-candidate
+          const signalType = payload?.signalType; // call-invite, call-accept, call-decline, call-busy, call-end, webrtc-offer, webrtc-answer, webrtc-ice
           const target = payload?.targetUsername?.toLowerCase()?.trim();
 
           if (!target || !signalType) {
@@ -289,6 +375,7 @@ export function setupWebSocketServer(wss: WebSocketServer): void {
                 type: 'call-failed',
                 payload: {
                   target,
+                  callId: payload?.callId,
                   reason: 'User is currently offline',
                 },
               })

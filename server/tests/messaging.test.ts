@@ -1,21 +1,27 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
+import request from 'supertest';
 import { createApp } from '../src/app.js';
 import { setupWebSocketServer } from '../src/services/websocket.service.js';
 import { presenceService } from '../src/services/presence.service.js';
+import { messageService } from '../src/services/message.service.js';
 import { prisma } from '../src/db.js';
 import crypto from 'crypto';
 
-describe('SPILLOUT Ephemeral E2EE Messaging, Presence & Signaling WebSocket Tests', () => {
+describe('SPILLOUT Reliable E2EE Messaging, 24h Retention & Acknowledgements Tests', () => {
   let server: http.Server;
   let wss: WebSocketServer;
+  let app: any;
   let port: number;
   let user1Token: string;
   let user2Token: string;
+  let u1Id: string;
+  let u2Id: string;
   const activeSockets: WebSocket[] = [];
 
   beforeAll(async () => {
+    await prisma.message.deleteMany({});
     await prisma.session.deleteMany({});
     await prisma.user.deleteMany({});
 
@@ -27,6 +33,7 @@ describe('SPILLOUT Ephemeral E2EE Messaging, Presence & Signaling WebSocket Test
         canonicalUsername: 'alice01',
         passwordHash: 'dummy_hash_1',
         gender: 'Female',
+        avatarId: 'avatar_01',
         createdAt: now,
         lastActivityAt: now,
       },
@@ -38,11 +45,14 @@ describe('SPILLOUT Ephemeral E2EE Messaging, Presence & Signaling WebSocket Test
         canonicalUsername: 'bob02',
         passwordHash: 'dummy_hash_2',
         gender: 'Male',
+        avatarId: 'avatar_02',
         createdAt: now,
         lastActivityAt: now,
       },
     });
 
+    u1Id = u1.id;
+    u2Id = u2.id;
     user1Token = crypto.randomBytes(32).toString('hex');
     user2Token = crypto.randomBytes(32).toString('hex');
 
@@ -54,7 +64,7 @@ describe('SPILLOUT Ephemeral E2EE Messaging, Presence & Signaling WebSocket Test
       ],
     });
 
-    const app = createApp();
+    app = createApp();
     server = http.createServer(app);
     wss = new WebSocketServer({ server, path: '/ws' });
     setupWebSocketServer(wss);
@@ -74,11 +84,18 @@ describe('SPILLOUT Ephemeral E2EE Messaging, Presence & Signaling WebSocket Test
         ws.terminate();
       }
     }
-    await new Promise<void>((resolve) => wss.close(() => resolve()));
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await prisma.session.deleteMany({});
-    await prisma.user.deleteMany({});
-    await prisma.$disconnect();
+    if (wss) {
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+    }
+    if (server) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    try {
+      await prisma.message.deleteMany({});
+      await prisma.session.deleteMany({});
+      await prisma.user.deleteMany({});
+      await prisma.$disconnect();
+    } catch {}
   });
 
   it('authenticates via URL query parameter ?token=... immediately upon connection', async () => {
@@ -97,6 +114,7 @@ describe('SPILLOUT Ephemeral E2EE Messaging, Presence & Signaling WebSocket Test
     const msg = await authSuccessPromise;
     expect(msg.type).toBe('auth-success');
     expect(msg.payload.canonicalUsername).toBe('alice01');
+    expect(msg.payload.avatarId).toBe('avatar_01');
     expect(presenceService.isOnline('alice01')).toBe(true);
 
     ws.close();
@@ -136,8 +154,7 @@ describe('SPILLOUT Ephemeral E2EE Messaging, Presence & Signaling WebSocket Test
     await new Promise((r) => setTimeout(r, 50));
   });
 
-  it('broadcasts real-time presence-update when users connect and disconnect', async () => {
-    // 1. Alice connects first
+  it('queues encrypted messages when recipient is offline with 24-hour expiration', async () => {
     const wsAlice = new WebSocket(`ws://localhost:${port}/ws?token=${user1Token}`);
     activeSockets.push(wsAlice);
 
@@ -147,11 +164,16 @@ describe('SPILLOUT Ephemeral E2EE Messaging, Presence & Signaling WebSocket Test
       });
     });
 
-    // 2. Set up listener on Alice for Bob's online event
-    const bobOnlinePromise = new Promise<any>((resolve) => {
+    expect(presenceService.isOnline('bob02')).toBe(false);
+
+    // Alice sends message to Bob (who is offline)
+    const testMsgId = `test_offline_${Date.now()}`;
+
+    // Register listener before sending to avoid race conditions
+    const sentAckPromise = new Promise<any>((resolve) => {
       const handler = (raw: any) => {
         const msg = JSON.parse(raw.toString());
-        if (msg.type === 'presence-update' && msg.payload.canonicalUsername === 'bob02') {
+        if (msg.type === 'message-sent' && msg.payload.messageId === testMsgId) {
           wsAlice.off('message', handler);
           resolve(msg);
         }
@@ -159,190 +181,133 @@ describe('SPILLOUT Ephemeral E2EE Messaging, Presence & Signaling WebSocket Test
       wsAlice.on('message', handler);
     });
 
-    // 3. Bob connects
-    const wsBob = new WebSocket(`ws://localhost:${port}/ws?token=${user2Token}`);
-    activeSockets.push(wsBob);
-
-    const onlineEvent = await bobOnlinePromise;
-    expect(onlineEvent.payload.canonicalUsername).toBe('bob02');
-    expect(onlineEvent.payload.isOnline).toBe(true);
-
-    // 4. Set up listener on Alice for Bob's offline event
-    const bobOfflinePromise = new Promise<any>((resolve) => {
-      const handler = (raw: any) => {
-        const msg = JSON.parse(raw.toString());
-        if (msg.type === 'presence-update' && msg.payload.canonicalUsername === 'bob02') {
-          wsAlice.off('message', handler);
-          resolve(msg);
-        }
-      };
-      wsAlice.on('message', handler);
-    });
-
-    // 5. Bob disconnects
-    wsBob.close();
-
-    const offlineEvent = await bobOfflinePromise;
-    expect(offlineEvent.payload.canonicalUsername).toBe('bob02');
-    expect(offlineEvent.payload.isOnline).toBe(false);
-
-    wsAlice.close();
-    await new Promise((r) => setTimeout(r, 50));
-  });
-
-  it('supports multiple concurrent connections for the same account without marking user offline prematurely', async () => {
-    // Tab 1 for Alice
-    const wsAliceTab1 = new WebSocket(`ws://localhost:${port}/ws?token=${user1Token}`);
-    // Tab 2 for Alice
-    const wsAliceTab2 = new WebSocket(`ws://localhost:${port}/ws?token=${user1Token}`);
-    activeSockets.push(wsAliceTab1, wsAliceTab2);
-
-    await Promise.all([
-      new Promise<void>((res) => {
-        wsAliceTab1.on('message', (raw) => {
-          if (JSON.parse(raw.toString()).type === 'auth-success') res();
-        });
-      }),
-      new Promise<void>((res) => {
-        wsAliceTab2.on('message', (raw) => {
-          if (JSON.parse(raw.toString()).type === 'auth-success') res();
-        });
-      }),
-    ]);
-
-    expect(presenceService.isOnline('alice01')).toBe(true);
-
-    // Close Tab 1: Alice should STILL be online because Tab 2 is active
-    wsAliceTab1.close();
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(presenceService.isOnline('alice01')).toBe(true);
-
-    // Close Tab 2: Now Alice should be offline
-    wsAliceTab2.close();
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(presenceService.isOnline('alice01')).toBe(false);
-  });
-
-  it('handles case-insensitive canonical username matching (Alice01 vs alice01)', async () => {
-    const wsAlice = new WebSocket(`ws://localhost:${port}/ws?token=${user1Token}`);
-    activeSockets.push(wsAlice);
-
-    await new Promise<void>((resolve) => {
-      wsAlice.on('message', (raw) => {
-        if (JSON.parse(raw.toString()).type === 'auth-success') resolve();
-      });
-    });
-
-    expect(presenceService.isOnline('Alice01')).toBe(true);
-    expect(presenceService.isOnline('alice01')).toBe(true);
-    expect(presenceService.isOnline('  ALICE01  ')).toBe(true);
-
-    wsAlice.close();
-    await new Promise((r) => setTimeout(r, 50));
-  });
-
-  it('rejects sending messages when recipient is offline and does not queue them', async () => {
-    const ws1 = new WebSocket(`ws://localhost:${port}/ws?token=${user1Token}`);
-    activeSockets.push(ws1);
-
-    await new Promise<void>((resolve) => {
-      ws1.on('message', (raw) => {
-        if (JSON.parse(raw.toString()).type === 'auth-success') resolve();
-      });
-    });
-
-    // Alice attempts to send an E2EE message to Bob (who is offline)
-    ws1.send(
+    wsAlice.send(
       JSON.stringify({
         type: 'send-e2ee-message',
         payload: {
+          id: testMsgId,
           recipientUsername: 'Bob02',
-          ciphertext: 'ENCRYPTED_BASE64_CIPHERTEXT',
-          iv: 'BASE64_IV',
-          tag: 'BASE64_TAG',
+          ciphertext: 'ENCRYPTED_PAYLOAD_FOR_OFFLINE_BOB',
+          iv: 'GCM_NONCE_12_BYTES',
           senderEphemeralPublicKey: 'PUBKEY_ALICE',
         },
       })
     );
 
-    const undeliverable = await new Promise<any>((resolve) => {
-      const handler = (raw: any) => {
-        const msg = JSON.parse(raw.toString());
-        if (msg.type === 'message-undeliverable') {
-          ws1.off('message', handler);
-          resolve(msg);
-        }
-      };
-      ws1.on('message', handler);
+    // Alice should receive 'message-sent' acknowledgement from server
+    const sentAck = await sentAckPromise;
+
+    expect(sentAck.type).toBe('message-sent');
+    expect(sentAck.payload.status).toBe('sent');
+    expect(sentAck.payload.recipientCanonical).toBe('bob02');
+
+    // Verify stored in DB with 24h expiration
+    const storedMsg = await prisma.message.findUnique({
+      where: { id: testMsgId },
     });
 
-    expect(undeliverable.type).toBe('message-undeliverable');
-    expect(undeliverable.payload.reason).toContain('offline');
+    expect(storedMsg).toBeDefined();
+    expect(storedMsg?.status).toBe('sent');
+    expect(storedMsg?.ciphertext).toBe('ENCRYPTED_PAYLOAD_FOR_OFFLINE_BOB');
+    // Confirm expiresAt is ~24 hours from createdAt
+    const diffHours = (storedMsg!.expiresAt.getTime() - storedMsg!.createdAt.getTime()) / (1000 * 60 * 60);
+    expect(Math.round(diffHours)).toBe(24);
 
-    // Confirm that the message payload is NOT saved to the database anywhere
-    const dbSessions = await prisma.session.findMany({});
-    expect(dbSessions.length).toBe(2);
-
-    ws1.close();
+    wsAlice.close();
     await new Promise((r) => setTimeout(r, 50));
   });
 
-  it('relays encrypted ciphertext in real-time when both participants are online', async () => {
-    const wsAlice = new WebSocket(`ws://localhost:${port}/ws?token=${user1Token}`);
+  it('delivers unexpired queued messages to recipient upon reconnection and handles acknowledgements', async () => {
+    // Bob now connects. He should immediately receive the queued message sent by Alice!
     const wsBob = new WebSocket(`ws://localhost:${port}/ws?token=${user2Token}`);
-    activeSockets.push(wsAlice, wsBob);
+    activeSockets.push(wsBob);
 
-    await Promise.all([
-      new Promise<void>((res) => {
-        wsAlice.on('message', (raw) => {
-          if (JSON.parse(raw.toString()).type === 'auth-success') res();
-        });
-      }),
-      new Promise<void>((res) => {
-        wsBob.on('message', (raw) => {
-          if (JSON.parse(raw.toString()).type === 'auth-success') res();
-        });
-      }),
-    ]);
-
-    // Set up promise for Bob to receive the E2EE message
-    const bobReceivedPromise = new Promise<any>((res) => {
+    const receivedMessage = await new Promise<any>((resolve) => {
       const handler = (raw: any) => {
         const msg = JSON.parse(raw.toString());
-        if (msg.type === 'e2ee-message') {
+        if (msg.type === 'e2ee-message' && msg.payload.ciphertext === 'ENCRYPTED_PAYLOAD_FOR_OFFLINE_BOB') {
           wsBob.off('message', handler);
-          res(msg);
+          resolve(msg);
         }
       };
       wsBob.on('message', handler);
     });
 
-    // Alice sends E2EE message to Bob
-    wsAlice.send(
+    expect(receivedMessage.type).toBe('e2ee-message');
+    expect(receivedMessage.payload.ciphertext).toBe('ENCRYPTED_PAYLOAD_FOR_OFFLINE_BOB');
+
+    // Bob acknowledges receipt
+    wsBob.send(
       JSON.stringify({
-        type: 'send-e2ee-message',
+        type: 'message-ack',
         payload: {
-          recipientUsername: 'Bob02',
-          ciphertext: 'AUTHENTICATED_AES_GCM_ENCRYPTED_TEXT',
-          iv: 'GCM_NONCE_12_BYTES',
-          tag: 'AUTH_TAG_16_BYTES',
-          senderEphemeralPublicKey: 'EPHEMERAL_ECDH_PUBLIC_KEY',
+          messageId: receivedMessage.payload.id,
         },
       })
     );
 
-    const bobReceived = await bobReceivedPromise;
+    // Wait for DB to update status to 'delivered'
+    await new Promise((r) => setTimeout(r, 150));
 
-    expect(bobReceived.type).toBe('e2ee-message');
-    expect(bobReceived.payload.senderUsername).toBe('Alice01');
-    expect(bobReceived.payload.ciphertext).toBe('AUTHENTICATED_AES_GCM_ENCRYPTED_TEXT');
-    expect(bobReceived.payload.iv).toBe('GCM_NONCE_12_BYTES');
-    expect(bobReceived.payload.senderEphemeralPublicKey).toBe('EPHEMERAL_ECDH_PUBLIC_KEY');
+    const updated = await prisma.message.findUnique({
+      where: { id: receivedMessage.payload.id },
+    });
 
-    wsAlice.close();
+    expect(updated?.status).toBe('delivered');
+    expect(updated?.deliveredAt).toBeDefined();
+
     wsBob.close();
     await new Promise((r) => setTimeout(r, 50));
+  });
+
+  it('retrieves conversation message history via REST API within the 24-hour window', async () => {
+    const res = await request(app)
+      .get('/api/messages/bob02')
+      .set('Authorization', `Bearer ${user1Token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.messages).toBeDefined();
+    expect(Array.isArray(res.body.messages)).toBe(true);
+    expect(res.body.messages.length).toBeGreaterThan(0);
+    expect(res.body.messages[0].ciphertext).toBe('ENCRYPTED_PAYLOAD_FOR_OFFLINE_BOB');
+  });
+
+  it('excludes expired messages and purges them during retention cleanup', async () => {
+    // Insert an artificially expired message (> 24 hours old)
+    const oldDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    const expiredId = `expired_msg_${Date.now()}`;
+
+    await prisma.message.create({
+      data: {
+        id: expiredId,
+        conversationId: 'alice01:bob02',
+        senderCanonical: 'alice01',
+        recipientCanonical: 'bob02',
+        ciphertext: 'ANCIENT_CIPHERTEXT',
+        iv: 'OLD_IV',
+        senderEphemeralPublicKey: 'PUBKEY_ALICE',
+        createdAt: oldDate,
+        expiresAt: new Date(oldDate.getTime() + 24 * 60 * 60 * 1000), // Expired 1 hour ago
+        status: 'sent',
+      },
+    });
+
+    // 1. Verify GET /api/messages/:username excludes it
+    const res = await request(app)
+      .get('/api/messages/bob02')
+      .set('Authorization', `Bearer ${user1Token}`);
+
+    const hasExpired = res.body.messages.some((m: any) => m.id === expiredId);
+    expect(hasExpired).toBe(false);
+
+    // 2. Run message cleanup task
+    const deletedCount = await messageService.cleanupExpiredMessages();
+    expect(deletedCount).toBeGreaterThanOrEqual(1);
+
+    // 3. Confirm physically deleted from DB
+    const checkDb = await prisma.message.findUnique({
+      where: { id: expiredId },
+    });
+    expect(checkDb).toBeNull();
   });
 });

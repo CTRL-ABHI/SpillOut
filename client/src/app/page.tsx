@@ -7,7 +7,7 @@ import { socket } from '@/lib/socket';
 import {
   getOrCreateIdentityKeyPair,
   encryptTextMessage,
-  decryptTextMessage,
+  tryDecryptTextMessage,
   purgeCryptographicMemory,
 } from '@/lib/crypto';
 import { webrtcVoice } from '@/lib/webrtc';
@@ -22,7 +22,6 @@ import { UserSearchModal } from '@/components/chat/UserSearchModal';
 import { VoiceCallModal } from '@/components/voice/VoiceCallModal';
 import { BlurOverlay } from '@/components/privacy/BlurOverlay';
 import { DoodleWallpaper } from '@/components/doodles/DoodleWallpaper';
-import { AuthSketchHero } from '@/components/doodles/AuthSketchHero';
 import { EmptyChatDoodle } from '@/components/doodles/EmptyChatDoodle';
 
 import {
@@ -34,7 +33,6 @@ import {
   Loader2,
   AlertTriangle,
   Plus,
-  ArrowRight,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -43,7 +41,7 @@ export default function SpilloutApp() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('signup');
 
-  // In-memory state (NEVER persisted to disk/storage)
+  // Active Conversations and unexpired messages (24-hour retention)
   const [conversations, setConversations] = useState<ActiveConversation[]>([]);
   const [activeRecipient, setActiveRecipient] = useState<string | null>(null);
   // mapping of canonicalUsername -> ChatMessage[]
@@ -57,6 +55,7 @@ export default function SpilloutApp() {
   // Call state
   const [callSession, setCallSession] = useState<{
     peerUsername: string;
+    peerAvatarId?: string | null;
     callState: CallState;
     isIncoming: boolean;
     callId?: string;
@@ -74,7 +73,7 @@ export default function SpilloutApp() {
         const res = await api.getMe();
         if (res.data?.user) {
           setCurrentUser(res.data.user);
-          await getOrCreateIdentityKeyPair();
+          await getOrCreateIdentityKeyPair(res.data.user.canonicalUsername);
           const token = res.data.token || getApiSessionToken();
           socket.connect(token || undefined);
           loadAccountStatus();
@@ -105,10 +104,10 @@ export default function SpilloutApp() {
     // A. Listen for incoming E2EE messages
     const unsubMsg = socket.on('e2ee-message', async (payload: any) => {
       try {
-        const { senderUsername, senderCanonical, ciphertext, iv, senderEphemeralPublicKey, timestamp } = payload;
+        const { id, senderUsername, senderCanonical, ciphertext, iv, senderEphemeralPublicKey, timestamp } = payload;
 
         // Decrypt using Web Crypto API
-        const plaintext = await decryptTextMessage(
+        const { text: plaintext, isDecrypted } = await tryDecryptTextMessage(
           ciphertext,
           iv,
           senderEphemeralPublicKey
@@ -116,21 +115,33 @@ export default function SpilloutApp() {
 
         sound.playMessageChime();
 
+        // Acknowledge receipt to server immediately
+        const msgId = id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        if (id) {
+          socket.acknowledgeMessage(id);
+        }
+
         const newMsg: ChatMessage = {
-          id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          id: msgId,
           sender: senderUsername,
           recipient: currentUser.username,
           text: plaintext,
           timestamp: timestamp || new Date().toISOString(),
           isSelf: false,
           status: 'delivered',
-          isDecrypted: true,
+          isDecrypted,
         };
 
-        setMessagesByRecipient((prev) => ({
-          ...prev,
-          [senderCanonical]: [...(prev[senderCanonical] || []), newMsg],
-        }));
+        setMessagesByRecipient((prev) => {
+          const list = prev[senderCanonical] || [];
+          if (list.some((m) => m.id === msgId)) {
+            return prev;
+          }
+          return {
+            ...prev,
+            [senderCanonical]: [...list, newMsg],
+          };
+        });
 
         // Update or insert conversation in active memory
         setConversations((prev) => {
@@ -160,11 +171,39 @@ export default function SpilloutApp() {
           }
         });
       } catch (decErr) {
-        console.error('Failed to decrypt incoming message', decErr);
+        console.error('Failed to process incoming message', decErr);
       }
     });
 
-    // B. Listen for initial presence snapshot upon connection / reconnection
+    // B. Listen for server acceptance acknowledgement (status: sent)
+    const unsubSent = socket.on('message-sent', (payload: any) => {
+      const { messageId, recipientCanonical } = payload;
+      setMessagesByRecipient((prev) => {
+        const list = prev[recipientCanonical] || [];
+        return {
+          ...prev,
+          [recipientCanonical]: list.map((m) =>
+            m.id === messageId ? { ...m, status: m.status === 'delivered' ? 'delivered' : 'sent' } : m
+          ),
+        };
+      });
+    });
+
+    // C. Listen for recipient acknowledgement (status: delivered)
+    const unsubDelivered = socket.on('message-delivered', (payload: any) => {
+      const { messageId, recipientCanonical } = payload;
+      setMessagesByRecipient((prev) => {
+        const list = prev[recipientCanonical] || [];
+        return {
+          ...prev,
+          [recipientCanonical]: list.map((m) =>
+            m.id === messageId ? { ...m, status: 'delivered' } : m
+          ),
+        };
+      });
+    });
+
+    // D. Listen for initial presence snapshot upon connection / reconnection
     const unsubSnapshot = socket.on('presence-snapshot', (payload: any) => {
       const onlineUsers: string[] = (payload?.onlineUsers || []).map((u: string) => u.toLowerCase().trim());
       setConversations((prev) =>
@@ -175,7 +214,7 @@ export default function SpilloutApp() {
       );
     });
 
-    // C. Listen for real-time presence updates (user came online / went offline)
+    // E. Listen for real-time presence updates (user came online / went offline)
     const unsubPresence = socket.on('presence-update', (payload: any) => {
       const target = (payload?.canonicalUsername || '').toLowerCase().trim();
       const isOnline = !!payload?.isOnline;
@@ -186,7 +225,7 @@ export default function SpilloutApp() {
       );
     });
 
-    // D. Listen for individual presence status responses
+    // F. Listen for individual presence status responses
     const unsubStatus = socket.on('presence-status', (payload: any) => {
       const target = (payload?.username || '').toLowerCase().trim();
       const isOnline = !!payload?.isOnline;
@@ -197,7 +236,7 @@ export default function SpilloutApp() {
       );
     });
 
-    // E. Listen for socket reconnection and re-verify presence
+    // G. Listen for socket reconnection and re-verify presence
     const unsubStatusChange = socket.on('connection-status', ({ status }: any) => {
       if (status === 'connected') {
         setConversations((prev) => {
@@ -209,13 +248,25 @@ export default function SpilloutApp() {
       }
     });
 
-    // F. Listen for message undeliverable
-    const unsubUndelivered = socket.on('message-undeliverable', (payload: any) => {
-      setToastMessage(payload.reason || 'Message could not be delivered.');
+    // H. Listen for message failure notices
+    const unsubFailed = socket.on('message-failed', (payload: any) => {
+      const messageId = payload?.messageId;
+      if (messageId) {
+        setMessagesByRecipient((prev) => {
+          const updated = { ...prev };
+          for (const key of Object.keys(updated)) {
+            updated[key] = updated[key].map((m) =>
+              m.id === messageId ? { ...m, status: 'failed' } : m
+            );
+          }
+          return updated;
+        });
+      }
+      setToastMessage(payload?.reason || 'Message failed to deliver');
       setTimeout(() => setToastMessage(null), 5000);
     });
 
-    // G. Initialize WebRTC voice manager
+    // I. Initialize WebRTC voice manager
     const cleanupVoice = webrtcVoice.init({
       onStateChange: (state, error) => {
         setCallSession((prev) => ({
@@ -226,8 +277,12 @@ export default function SpilloutApp() {
       },
       onRemoteStream: () => {},
       onIncomingCall: (fromUsername, callId) => {
+        const conv = conversations.find(
+          (c) => c.canonicalUsername.toLowerCase().trim() === fromUsername.toLowerCase().trim()
+        );
         setCallSession({
           peerUsername: fromUsername,
+          peerAvatarId: conv?.avatarId,
           callState: 'ringing-incoming',
           isIncoming: true,
           callId,
@@ -237,29 +292,31 @@ export default function SpilloutApp() {
 
     return () => {
       unsubMsg();
+      unsubSent();
+      unsubDelivered();
       unsubSnapshot();
       unsubPresence();
       unsubStatus();
       unsubStatusChange();
-      unsubUndelivered();
+      unsubFailed();
       cleanupVoice();
     };
-  }, [currentUser, activeRecipient]);
+  }, [currentUser, activeRecipient, conversations]);
 
   // Handle successful login or registration
   const handleAuthSuccess = async (user: User, token: string) => {
     setCurrentUser(user);
-    await getOrCreateIdentityKeyPair();
+    await getOrCreateIdentityKeyPair(user.canonicalUsername);
     socket.connect(token);
     loadAccountStatus();
   };
 
-  // Handle Logout
+  // Handle Logout (24h messages remain securely decryptable on this device)
   const handleLogout = async () => {
     try {
       await api.logout();
     } catch {}
-    // Purge memory completely
+    // Purge runtime memory
     purgeCryptographicMemory();
     socket.disconnect();
     webrtcVoice.cleanup();
@@ -267,6 +324,91 @@ export default function SpilloutApp() {
     setConversations([]);
     setMessagesByRecipient({});
     setActiveRecipient(null);
+  };
+
+  // Update profile avatar
+  const handleUpdateAvatar = async (avatarId: string | null) => {
+    try {
+      const res = await api.updateAvatar(avatarId);
+      if (res.data?.user) {
+        setCurrentUser(res.data.user);
+      }
+    } catch (err) {
+      console.error('Failed to update avatar', err);
+    }
+  };
+
+  // Select conversation and load unexpired messages from the last 24 hours
+  const handleSelectConversation = async (canonicalUsername: string) => {
+    setActiveRecipient(canonicalUsername);
+    const conv = conversations.find((c) => c.canonicalUsername === canonicalUsername);
+    if (!conv) return;
+
+    // Reset unread count locally
+    setConversations((prev) =>
+      prev.map((c) => (c.canonicalUsername === canonicalUsername ? { ...c, unreadCount: 0 } : c))
+    );
+
+    // Resolve public key if missing
+    let peerPublicKey = conv.publicKey;
+    if (!peerPublicKey) {
+      try {
+        const keyRes = await api.getUserPublicKey(conv.username);
+        if (keyRes.data?.user) {
+          peerPublicKey = keyRes.data.user.publicKey;
+          conv.publicKey = peerPublicKey;
+          if (keyRes.data.user.avatarId) {
+            conv.avatarId = keyRes.data.user.avatarId;
+          }
+        }
+      } catch {}
+    }
+
+    // Retrieve unexpired 24-hour messages from backend
+    try {
+      const historyRes = await api.getConversationMessages(conv.username);
+      if (historyRes.data?.messages) {
+        const decryptedList: ChatMessage[] = [];
+
+        for (const m of historyRes.data.messages) {
+          const isSelf = m.senderCanonical === currentUser?.canonicalUsername.toLowerCase().trim();
+          const decryptionKey = isSelf ? peerPublicKey : m.senderEphemeralPublicKey;
+
+          let text = '[Encrypted message]';
+          let isDecrypted = false;
+
+          if (decryptionKey) {
+            const dec = await tryDecryptTextMessage(m.ciphertext, m.iv, decryptionKey);
+            text = dec.text;
+            isDecrypted = dec.isDecrypted;
+          }
+
+          decryptedList.push({
+            id: m.id,
+            sender: isSelf ? currentUser!.username : conv.username,
+            recipient: isSelf ? conv.username : currentUser!.username,
+            text,
+            timestamp: m.createdAt,
+            expiresAt: m.expiresAt,
+            isSelf,
+            status: m.status as any,
+            isDecrypted,
+          });
+
+          // Acknowledge incoming pending messages that haven't been delivered yet
+          if (!isSelf && m.status === 'sent') {
+            socket.acknowledgeMessage(m.id);
+          }
+        }
+
+        setMessagesByRecipient((prev) => ({
+          ...prev,
+          [canonicalUsername]: decryptedList,
+        }));
+      }
+    } catch (err) {
+      console.warn('Could not fetch conversation history', err);
+    }
   };
 
   // Send an encrypted message to the active recipient
@@ -282,30 +424,26 @@ export default function SpilloutApp() {
       if (keyRes.data?.user.publicKey) {
         peerPublicKey = keyRes.data.user.publicKey;
         conversation.publicKey = peerPublicKey;
+        if (keyRes.data.user.avatarId) {
+          conversation.avatarId = keyRes.data.user.avatarId;
+        }
       } else {
         throw new Error('Recipient has not published a valid encryption key');
       }
     }
 
-    // Encrypt using Web Crypto API
+    // Encrypt using Web Crypto API on device
     const encrypted = await encryptTextMessage(text, peerPublicKey);
-
-    // Relay ciphertext to recipient through server
-    const relayed = socket.sendE2EEMessage(
-      conversation.username,
-      encrypted.ciphertext,
-      encrypted.iv,
-      encrypted.senderEphemeralPublicKey
-    );
+    const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     const newMsg: ChatMessage = {
-      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: messageId,
       sender: currentUser.username,
       recipient: conversation.username,
       text,
       timestamp: new Date().toISOString(),
       isSelf: true,
-      status: relayed ? 'delivered' : 'failed',
+      status: 'sending',
       isDecrypted: true,
     };
 
@@ -313,6 +451,24 @@ export default function SpilloutApp() {
       ...prev,
       [activeRecipient]: [...(prev[activeRecipient] || []), newMsg],
     }));
+
+    // Relay ciphertext to recipient through server with 24-hour expiration queue
+    const sent = socket.sendE2EEMessage(
+      conversation.username,
+      encrypted.ciphertext,
+      encrypted.iv,
+      encrypted.senderEphemeralPublicKey,
+      messageId
+    );
+
+    if (!sent) {
+      setMessagesByRecipient((prev) => ({
+        ...prev,
+        [activeRecipient]: (prev[activeRecipient] || []).map((m) =>
+          m.id === messageId ? { ...m, status: 'failed' } : m
+        ),
+      }));
+    }
 
     setConversations((prev) =>
       prev.map((c) =>
@@ -329,8 +485,12 @@ export default function SpilloutApp() {
 
   // Start voice call
   const handleStartVoiceCall = async (recipientUsername: string) => {
+    const conv = conversations.find(
+      (c) => c.username.toLowerCase().trim() === recipientUsername.toLowerCase().trim()
+    );
     setCallSession({
       peerUsername: recipientUsername,
+      peerAvatarId: conv?.avatarId,
       callState: 'initiating',
       isIncoming: false,
     });
@@ -360,7 +520,6 @@ export default function SpilloutApp() {
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-background text-neutral-900 flex flex-col justify-between p-4 sm:p-8 relative overflow-x-hidden selection:bg-neutral-900 selection:text-white">
-        {/* Subtle Doodle Wallpaper */}
         <DoodleWallpaper opacity={0.035} />
 
         {/* Top Navbar */}
@@ -379,23 +538,23 @@ export default function SpilloutApp() {
 
         {/* Center Main Stage */}
         <main className="max-w-6xl w-full mx-auto py-8 sm:py-12 grid grid-cols-1 lg:grid-cols-12 gap-10 items-center z-10">
-          {/* Brand Highlights & Sketchbook Intro */}
+          {/* Brand Highlights & Intro */}
           <div className="lg:col-span-6 space-y-6 text-left">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-neutral-100 border border-neutral-300 text-xs font-mono font-bold text-neutral-800">
               <Sparkles className="w-3.5 h-3.5 text-neutral-900" />
-              <span>Zero-Archive Communication</span>
+              <span>Encrypted 24-Hour Communication</span>
             </div>
 
             <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight text-neutral-900 leading-[1.08]">
               Private talks.
               <br />
               <span className="underline decoration-wavy decoration-neutral-300 underline-offset-8">
-                Zero archives.
+                24-Hour retention.
               </span>
             </h1>
 
             <p className="text-sm sm:text-base text-neutral-600 leading-relaxed max-w-lg">
-              SpillOut is designed for people who want direct, expressive conversations without building a permanent digital history of everything they say.
+              SpillOut gives you direct, encrypted conversations with 24-hour message retention. Messages expire permanently after 24 hours, keeping your chats private without building permanent archives.
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-2">
@@ -405,7 +564,7 @@ export default function SpilloutApp() {
                   <span>Real E2EE Text</span>
                 </div>
                 <p className="text-[11px] text-neutral-500 leading-relaxed">
-                  Encrypted on device. Server handles only opaque ciphertext.
+                  Encrypted on device. Server stores only opaque ciphertext for 24h.
                 </p>
               </div>
 
@@ -415,17 +574,17 @@ export default function SpilloutApp() {
                   <span>Encrypted Voice</span>
                 </div>
                 <p className="text-[11px] text-neutral-500 leading-relaxed">
-                  WebRTC DTLS-SRTP peer-to-peer. Zero audio recordings.
+                  WebRTC DTLS-SRTP peer-to-peer. Zero audio recordings or logs.
                 </p>
               </div>
 
               <div className="p-4 rounded-2xl bg-white border border-neutral-300 shadow-sm space-y-1">
                 <div className="flex items-center gap-2 text-neutral-900 font-bold text-xs">
                   <Clock className="w-4 h-4 text-neutral-900" />
-                  <span>7-Day Expiration</span>
+                  <span>24-Hour Expiration</span>
                 </div>
                 <p className="text-[11px] text-neutral-500 leading-relaxed">
-                  Inactive accounts and session data are permanently purged.
+                  Messages are permanently deleted after 24 hours. Inactive accounts purge in 7 days.
                 </p>
               </div>
 
@@ -437,13 +596,6 @@ export default function SpilloutApp() {
                 <p className="text-[11px] text-neutral-500 leading-relaxed">
                   Unconventional matrix authentication. No email or phone required.
                 </p>
-              </div>
-            </div>
-
-            {/* Desktop Sketch Artwork Accent */}
-            <div className="hidden lg:block pt-2">
-              <div className="inline-flex items-center gap-2 text-xs font-mono text-neutral-400">
-                <span>✦ Handwritten • Ephemeral • Mathematical Privacy ✦</span>
               </div>
             </div>
           </div>
@@ -484,7 +636,6 @@ export default function SpilloutApp() {
   // 3. Authenticated Dashboard & Communication Workspace
   return (
     <div className="h-screen w-screen bg-white flex flex-col overflow-hidden relative text-neutral-900 selection:bg-neutral-900 selection:text-white">
-      {/* Screen Shield Casual-Capture Protection */}
       <BlurOverlay enabled={true} />
 
       {/* Floating Toast Notice */}
@@ -497,20 +648,21 @@ export default function SpilloutApp() {
 
       {/* Active Workspace */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar / Conversation List (Visible on mobile if no active chat) */}
+        {/* Sidebar / Conversation List */}
         <div className={`h-full ${activeRecipient ? 'hidden sm:flex' : 'flex w-full sm:w-auto'}`}>
           <ConversationList
             user={currentUser}
             conversations={conversations}
             activeRecipient={activeRecipient}
-            onSelectConversation={(canonical) => setActiveRecipient(canonical)}
+            onSelectConversation={handleSelectConversation}
             onOpenNewChat={() => setIsSearchOpen(true)}
             onLogout={handleLogout}
+            onUpdateAvatar={handleUpdateAvatar}
             hoursUntilExpiration={hoursUntilExpiration}
           />
         </div>
 
-        {/* Main Chat View or Empty Workspace State */}
+        {/* Main Chat View or Empty State */}
         {activeConversation ? (
           <div className={`flex-1 h-full ${!activeRecipient ? 'hidden sm:flex' : 'flex'}`}>
             <ChatView
@@ -533,7 +685,7 @@ export default function SpilloutApp() {
                   Encrypted Workspace Ready
                 </h3>
                 <p className="text-xs text-neutral-500 max-w-sm mt-1.5 leading-relaxed">
-                  Start a private conversation by entering another person&apos;s username. Messages and audio exist in device memory only while connected.
+                  Start a private conversation by entering another person&apos;s username. Messages are encrypted on device and retained for 24 hours.
                 </p>
               </div>
 
@@ -560,13 +712,14 @@ export default function SpilloutApp() {
             const exists = prev.find((c) => c.canonicalUsername === newConv.canonicalUsername);
             return exists ? prev : [newConv, ...prev];
           });
-          setActiveRecipient(newConv.canonicalUsername);
+          handleSelectConversation(newConv.canonicalUsername);
         }}
       />
 
       {/* WebRTC Voice Call Modal */}
       <VoiceCallModal
         peerUsername={callSession.peerUsername}
+        peerAvatarId={callSession.peerAvatarId}
         callState={callSession.callState}
         isIncoming={callSession.isIncoming}
         errorMessage={callSession.errorMessage}

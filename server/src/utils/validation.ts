@@ -9,6 +9,22 @@ export const MAX_USERNAME_LENGTH = 10;
 export const VALID_GENDERS = ['Male', 'Female', 'Object'] as const;
 export type Gender = (typeof VALID_GENDERS)[number];
 
+// Display label mappings: Banana -> Male, Peach -> Female, Tomato -> Object
+export const GENDER_DISPLAY_MAP: Record<Gender, string> = {
+  Male: 'Banana',
+  Female: 'Peach',
+  Object: 'Tomato',
+};
+
+// Approved doodle avatar IDs
+export const APPROVED_AVATAR_IDS = new Set([
+  'avatar_01', 'avatar_02', 'avatar_03', 'avatar_04',
+  'avatar_05', 'avatar_06', 'avatar_07', 'avatar_08',
+  'avatar_09', 'avatar_10', 'avatar_11', 'avatar_12',
+  'avatar_13', 'avatar_14', 'avatar_15', 'avatar_16',
+  'avatar_17', 'avatar_18', 'avatar_19', 'avatar_20',
+]);
+
 export interface ValidationResult<T = void> {
   isValid: boolean;
   error?: string;
@@ -58,20 +74,61 @@ export function validateUsername(raw: unknown): ValidationResult<{ raw: string; 
 }
 
 /**
- * Validates gender selection:
- * - Exactly one of "Male", "Female", or "Object"
+ * Validates an optional doodle character avatar ID.
+ * Allows null/undefined/empty string (no avatar), or an approved avatar ID from the set.
  */
-export function validateGender(raw: unknown): ValidationResult<Gender> {
-  if (typeof raw !== 'string' || !VALID_GENDERS.includes(raw as Gender)) {
+export function validateAvatarId(raw: unknown): ValidationResult<string | null> {
+  if (raw === undefined || raw === null || raw === '') {
+    return { isValid: true, data: null };
+  }
+
+  if (typeof raw !== 'string') {
+    return { isValid: false, error: 'Avatar ID must be a string' };
+  }
+
+  const trimmed = raw.trim();
+  if (trimmed === '') {
+    return { isValid: true, data: null };
+  }
+
+  if (!APPROVED_AVATAR_IDS.has(trimmed)) {
     return {
       isValid: false,
-      error: 'Gender must be one of: Male, Female, Object',
+      error: 'Invalid avatar selection. Must be one of the approved doodle characters or null.',
     };
   }
 
+  return { isValid: true, data: trimmed };
+}
+
+/**
+ * Validates gender selection:
+ * Accepts Banana / Peach / Tomato (displayed options) or Male / Female / Object (underlying enums).
+ * Normalizes to the canonical storage enum ('Male', 'Female', 'Object').
+ */
+export function validateGender(raw: unknown): ValidationResult<Gender> {
+  if (typeof raw !== 'string') {
+    return {
+      isValid: false,
+      error: 'Gender must be one of: Banana, Peach, Tomato',
+    };
+  }
+
+  const normalized = raw.trim().toLowerCase();
+
+  if (normalized === 'banana' || normalized === 'male') {
+    return { isValid: true, data: 'Male' };
+  }
+  if (normalized === 'peach' || normalized === 'female') {
+    return { isValid: true, data: 'Female' };
+  }
+  if (normalized === 'tomato' || normalized === 'object') {
+    return { isValid: true, data: 'Object' };
+  }
+
   return {
-    isValid: true,
-    data: raw as Gender,
+    isValid: false,
+    error: 'Gender must be one of: Banana, Peach, Tomato',
   };
 }
 

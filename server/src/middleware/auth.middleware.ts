@@ -8,6 +8,7 @@ export interface AuthenticatedUser {
   username: string;
   canonicalUsername: string;
   gender: string;
+  avatarId?: string | null;
   publicKey?: string | null;
   createdAt: Date;
   lastActivityAt: Date;
@@ -93,6 +94,7 @@ export async function authMiddleware(
       username: session.user.username,
       canonicalUsername: session.user.canonicalUsername,
       gender: session.user.gender,
+      avatarId: session.user.avatarId,
       publicKey: session.user.publicKey,
       createdAt: session.user.createdAt,
       lastActivityAt: session.user.lastActivityAt,

@@ -264,4 +264,64 @@ describe('SPILLOUT Authentication & Inactivity Lifecycle Integration Tests', () 
     expect(reRegister.status).toBe(201);
     expect(reRegister.body.user.gender).toBe('Object');
   });
+
+  it('supports Banana, Peach, and Tomato gender selection with avatarId assignment', async () => {
+    const matrix = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
+
+    // Register Banana user with doodle avatar
+    const bananaRes = await request(app)
+      .post('/api/auth/register')
+      .send({
+        username: 'BananaUser',
+        password: matrix,
+        confirmPassword: matrix,
+        gender: 'Banana',
+        avatarId: 'avatar_03',
+      });
+    expect(bananaRes.status).toBe(201);
+    expect(bananaRes.body.user.gender).toBe('Male'); // Normalized in DB
+    expect(bananaRes.body.user.avatarId).toBe('avatar_03');
+
+    // Register Peach user
+    const peachRes = await request(app)
+      .post('/api/auth/register')
+      .send({
+        username: 'PeachUser',
+        password: matrix,
+        confirmPassword: matrix,
+        gender: 'Peach',
+        avatarId: 'avatar_07',
+      });
+    expect(peachRes.status).toBe(201);
+    expect(peachRes.body.user.gender).toBe('Female');
+    expect(peachRes.body.user.avatarId).toBe('avatar_07');
+
+    // Register Tomato user
+    const tomatoRes = await request(app)
+      .post('/api/auth/register')
+      .send({
+        username: 'TomatoUser',
+        password: matrix,
+        confirmPassword: matrix,
+        gender: 'Tomato',
+      });
+    expect(tomatoRes.status).toBe(201);
+    expect(tomatoRes.body.user.gender).toBe('Object');
+
+    // Update Tomato user avatar via /api/account/avatar
+    const cookies = tomatoRes.headers['set-cookie'];
+    const updateRes = await request(app)
+      .post('/api/account/avatar')
+      .set('Cookie', cookies!)
+      .send({ avatarId: 'avatar_12' });
+    expect(updateRes.status).toBe(200);
+    expect(updateRes.body.avatarId).toBe('avatar_12');
+
+    // Reject invalid avatarId
+    const invalidAvatarRes = await request(app)
+      .post('/api/account/avatar')
+      .set('Cookie', cookies!)
+      .send({ avatarId: 'invalid_malicious_avatar' });
+    expect(invalidAvatarRes.status).toBe(400);
+  });
 });

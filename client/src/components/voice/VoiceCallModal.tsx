@@ -3,11 +3,13 @@
 import React, { useState, useEffect } from 'react';
 import { CallState } from '@/types';
 import { webrtcVoice } from '@/lib/webrtc';
+import { DoodleAvatar } from '../doodles/avatars/DoodleAvatar';
 import { Phone, PhoneOff, Mic, MicOff, ShieldCheck, AlertCircle } from 'lucide-react';
 import { VoiceWaveDoodle } from '../doodles/VoiceWaveDoodle';
 
 interface VoiceCallModalProps {
   peerUsername: string;
+  peerAvatarId?: string | null;
   callState: CallState;
   isIncoming: boolean;
   onAccept?: () => void;
@@ -18,6 +20,7 @@ interface VoiceCallModalProps {
 
 export const VoiceCallModal: React.FC<VoiceCallModalProps> = ({
   peerUsername,
+  peerAvatarId,
   callState,
   isIncoming,
   onAccept,
@@ -69,8 +72,12 @@ export const VoiceCallModal: React.FC<VoiceCallModalProps> = ({
             <div className="absolute inset-0 rounded-full border-2 border-dashed border-neutral-400 animate-spin opacity-50" />
           )}
 
-          <div className="w-20 h-20 rounded-full bg-neutral-900 text-white flex items-center justify-center text-2xl font-bold font-mono shadow-md z-10">
-            {peerUsername.slice(0, 2).toUpperCase()}
+          <div className="z-10 shadow-md rounded-full">
+            <DoodleAvatar
+              avatarId={peerAvatarId}
+              username={peerUsername}
+              size="xl"
+            />
           </div>
         </div>
 

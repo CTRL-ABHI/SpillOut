@@ -1,21 +1,27 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// Prisma PostgreSQL schema for production / Docker deployments
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+enum Gender {
+  Male
+  Female
+  Object
 }
 
 model User {
   id                String    @id @default(uuid())
-  username          String
-  canonicalUsername String    @unique
+  username          String    @db.VarChar(10)
+  canonicalUsername String    @unique @db.VarChar(10)
   passwordHash      String
-  gender            String
+  gender            Gender
+  avatarId          String?   @db.VarChar(32) // Profile avatar identifier (e.g. avatar_01)
   publicKey         String?   // Base64-encoded public cryptographic identity key
   createdAt         DateTime  @default(now())
   lastActivityAt    DateTime  @default(now())
@@ -35,4 +41,24 @@ model Session {
 
   @@index([token])
   @@index([userId])
+}
+
+model Message {
+  id                        String    @id
+  conversationId            String
+  senderCanonical           String
+  recipientCanonical        String
+  ciphertext                String
+  iv                        String
+  tag                       String?
+  senderEphemeralPublicKey  String
+  createdAt                 DateTime  @default(now())
+  expiresAt                 DateTime
+  status                    String    @default("sent")
+  deliveredAt               DateTime?
+
+  @@index([recipientCanonical, expiresAt])
+  @@index([conversationId, expiresAt])
+  @@index([expiresAt])
+  @@index([senderCanonical, createdAt])
 }

@@ -4,6 +4,7 @@ import { createApp } from './app.js';
 import { config } from './config.js';
 import { setupWebSocketServer } from './services/websocket.service.js';
 import { accountCleanupService } from './services/account-cleanup.service.js';
+import { messageService } from './services/message.service.js';
 import { logger } from './utils/logger.js';
 import { prisma } from './db.js';
 
@@ -23,6 +24,9 @@ export async function startServer() {
   // Start 7-day inactivity cleanup background service
   accountCleanupService.start();
 
+  // Start 24-hour message retention cleanup background service
+  messageService.startCleanup();
+
   server.listen(config.port, '0.0.0.0', () => {
     logger.info(`SPILLOUT backend running on port ${config.port} (bound to 0.0.0.0)`);
     logger.info(`WebSocket endpoint available at ws://0.0.0.0:${config.port}/ws`);
@@ -34,6 +38,7 @@ export async function startServer() {
   const shutdown = async (signal: string) => {
     logger.info(`Received ${signal}. Shutting down cleanly...`);
     accountCleanupService.stop();
+    messageService.stopCleanup();
 
     wss.close(() => {
       logger.info('WebSocket server closed');

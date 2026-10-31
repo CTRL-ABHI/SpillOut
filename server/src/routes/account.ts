@@ -4,6 +4,7 @@ import { authMiddleware, SESSION_COOKIE_NAME } from '../middleware/auth.middlewa
 import { getSessionCookieOptions } from './auth.js';
 import { presenceService } from '../services/presence.service.js';
 import { accountCleanupService } from '../services/account-cleanup.service.js';
+import { validateAvatarId } from '../utils/validation.js';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 
@@ -24,6 +25,7 @@ accountRouter.get('/status', authMiddleware, async (req: Request, res: Response)
       username: user.username,
       canonicalUsername: user.canonicalUsername,
       gender: user.gender,
+      avatarId: user.avatarId || null,
       createdAt: user.createdAt,
       lastActivityAt: user.lastActivityAt,
       expiresAt: expirationDate,
@@ -31,6 +33,42 @@ accountRouter.get('/status', authMiddleware, async (req: Request, res: Response)
       policy: 'Account is permanently deleted after 7 consecutive days of inactivity',
     },
   });
+});
+
+/**
+ * Update doodle character profile avatar
+ */
+accountRouter.post('/avatar', authMiddleware, async (req: Request, res: Response): Promise<void> => {
+  const { avatarId } = req.body;
+  const validation = validateAvatarId(avatarId);
+
+  if (!validation.isValid) {
+    res.status(400).json({ error: validation.error });
+    return;
+  }
+
+  try {
+    const updated = await prisma.user.update({
+      where: { id: req.user!.id },
+      data: { avatarId: validation.data },
+      select: {
+        id: true,
+        username: true,
+        canonicalUsername: true,
+        gender: true,
+        avatarId: true,
+      },
+    });
+
+    res.json({
+      success: true,
+      avatarId: updated.avatarId,
+      user: updated,
+    });
+  } catch (err) {
+    logger.error('Failed to update avatar', err);
+    res.status(500).json({ error: 'Failed to update avatar' });
+  }
 });
 
 /**

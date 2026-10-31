@@ -173,14 +173,22 @@ class SocketClient {
     recipientUsername: string,
     ciphertext: string,
     iv: string,
-    senderEphemeralPublicKey: string
+    senderEphemeralPublicKey: string,
+    id?: string,
+    tag?: string
   ): boolean {
     return this.send('send-e2ee-message', {
+      id: id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       recipientUsername,
       ciphertext,
       iv,
+      tag,
       senderEphemeralPublicKey,
     });
+  }
+
+  public acknowledgeMessage(messageId: string): boolean {
+    return this.send('message-ack', { messageId });
   }
 
   public sendSignal(targetUsername: string, signalType: string, extraData?: any): boolean {

@@ -6,6 +6,7 @@ import {
   validateUsername,
   validateGender,
   validateMatrixPassword,
+  validateAvatarId,
 } from '../utils/validation.js';
 import { hashPassword, verifyPassword } from '../utils/password.js';
 import { authRateLimiter, searchRateLimiter } from '../middleware/rate-limiter.middleware.js';
@@ -72,7 +73,7 @@ authRouter.get('/check-username', searchRateLimiter, async (req: Request, res: R
  * Register a new account
  */
 authRouter.post('/register', authRateLimiter, async (req: Request, res: Response): Promise<void> => {
-  const { username, password, confirmPassword, gender, publicKey } = req.body;
+  const { username, password, confirmPassword, gender, publicKey, avatarId } = req.body;
 
   // 1. Validate username
   const userValidation = validateUsername(username);
@@ -88,14 +89,21 @@ authRouter.post('/register', authRateLimiter, async (req: Request, res: Response
     return;
   }
 
-  // 3. Validate password matrix
+  // 3. Validate optional avatarId
+  const avatarValidation = validateAvatarId(avatarId);
+  if (!avatarValidation.isValid) {
+    res.status(400).json({ error: avatarValidation.error });
+    return;
+  }
+
+  // 4. Validate password matrix
   const pwdValidation = validateMatrixPassword(password);
   if (!pwdValidation.isValid || !pwdValidation.data) {
     res.status(400).json({ error: pwdValidation.error });
     return;
   }
 
-  // 4. Validate confirm password matrix
+  // 5. Validate confirm password matrix
   const confirmValidation = validateMatrixPassword(confirmPassword);
   if (!confirmValidation.isValid || !confirmValidation.data) {
     res.status(400).json({ error: 'Invalid password confirmation matrix' });
@@ -110,7 +118,7 @@ authRouter.post('/register', authRateLimiter, async (req: Request, res: Response
   const { raw: rawUsername, canonical: canonicalUsername } = userValidation.data;
 
   try {
-    // 5. Enforce uniqueness in DB
+    // 6. Enforce uniqueness in DB
     const existing = await prisma.user.findUnique({
       where: { canonicalUsername },
     });
@@ -120,10 +128,10 @@ authRouter.post('/register', authRateLimiter, async (req: Request, res: Response
       return;
     }
 
-    // 6. Hash password using Argon2id
+    // 7. Hash password using Argon2id
     const passwordHash = await hashPassword(pwdValidation.data);
 
-    // 7. Create user
+    // 8. Create user
     const now = new Date();
     const user = await prisma.user.create({
       data: {
@@ -131,13 +139,14 @@ authRouter.post('/register', authRateLimiter, async (req: Request, res: Response
         canonicalUsername,
         passwordHash,
         gender: genderValidation.data,
+        avatarId: avatarValidation.data || null,
         publicKey: typeof publicKey === 'string' ? publicKey : null,
         createdAt: now,
         lastActivityAt: now,
       },
     });
 
-    // 8. Generate session
+    // 9. Generate session
     const sessionToken = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + config.sessionTtlHours * 3600 * 1000);
 
@@ -160,6 +169,7 @@ authRouter.post('/register', authRateLimiter, async (req: Request, res: Response
         username: user.username,
         canonicalUsername: user.canonicalUsername,
         gender: user.gender,
+        avatarId: user.avatarId,
         publicKey: user.publicKey,
         createdAt: user.createdAt,
         lastActivityAt: user.lastActivityAt,
@@ -254,6 +264,7 @@ authRouter.post('/login', authRateLimiter, async (req: Request, res: Response): 
         username: user.username,
         canonicalUsername: user.canonicalUsername,
         gender: user.gender,
+        avatarId: user.avatarId,
         publicKey: user.publicKey,
         createdAt: user.createdAt,
         lastActivityAt: now,
@@ -338,6 +349,8 @@ authRouter.get('/user/:username/public-key', authMiddleware, async (req: Request
         id: true,
         username: true,
         canonicalUsername: true,
+        gender: true,
+        avatarId: true,
         publicKey: true,
       },
     });
@@ -353,6 +366,8 @@ authRouter.get('/user/:username/public-key', authMiddleware, async (req: Request
       user: {
         username: targetUser.username,
         canonicalUsername: targetUser.canonicalUsername,
+        gender: targetUser.gender,
+        avatarId: targetUser.avatarId,
         publicKey: targetUser.publicKey,
         isOnline,
       },

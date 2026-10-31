@@ -2,43 +2,57 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const rawDbUrl = process.env.DATABASE_URL || process.env.POSTGRES_PRISMA_URL || process.env.POSTGRES_URL || '';
-if (!process.env.DATABASE_URL && rawDbUrl) {
+const isTestMode = process.argv.includes('--test') || process.argv.includes('--sqlite') || process.env.NODE_ENV === 'test';
+
+if (!isTestMode) {
+  try {
+    require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
+  } catch {}
+}
+
+let rawDbUrl = isTestMode ? 'file:./dev.db' : (process.env.DATABASE_URL || process.env.POSTGRES_PRISMA_URL || process.env.POSTGRES_URL || '');
+if (!isTestMode && !process.env.DATABASE_URL && rawDbUrl) {
   process.env.DATABASE_URL = rawDbUrl;
 }
 
-const isPostgres = rawDbUrl.startsWith('postgres://') || rawDbUrl.startsWith('postgresql://');
-const isProduction = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+const isPostgres = !isTestMode && (rawDbUrl.startsWith('postgres://') || rawDbUrl.startsWith('postgresql://'));
+const isProduction = !isTestMode && (process.env.NODE_ENV === 'production' || !!process.env.VERCEL);
 
-const prismaDir = path.resolve(__dirname, '..', 'prisma');
+const serverDir = path.resolve(__dirname, '..');
+const prismaDir = path.resolve(serverDir, 'prisma');
 const targetSchema = path.join(prismaDir, 'schema.prisma');
 const pgSchema = path.join(prismaDir, 'schema.postgresql.prisma');
+const sqliteSchema = path.join(prismaDir, 'schema.sqlite.prisma');
 
-console.log('[Prisma Prepare] Checking database configuration...');
+console.log(`[Prisma Prepare] Checking database configuration... (isTestMode=${isTestMode})`);
 
-// Activate PostgreSQL schema if postgres URL is present or if building for production/Vercel (unless local file URL explicitly set)
-const shouldActivatePostgres = (isPostgres || (isProduction && !rawDbUrl.startsWith('file:'))) && fs.existsSync(pgSchema);
+const shouldActivatePostgres = !isTestMode && (isPostgres || (isProduction && !rawDbUrl.startsWith('file:'))) && fs.existsSync(pgSchema);
 
 if (shouldActivatePostgres) {
   console.log('[Prisma Prepare] PostgreSQL connection/environment detected. Activating schema.postgresql.prisma');
   fs.copyFileSync(pgSchema, targetSchema);
-  // Ensure DATABASE_URL is set so prisma generate does not fail during headless CI/CD builds
   if (!process.env.DATABASE_URL) {
     process.env.DATABASE_URL = 'postgresql://placeholder:placeholder@localhost:5432/placeholder';
   }
 } else {
-  console.log('[Prisma Prepare] SQLite mode active.');
+  console.log('[Prisma Prepare] SQLite mode active. Activating schema.sqlite.prisma');
+  if (fs.existsSync(sqliteSchema)) {
+    fs.copyFileSync(sqliteSchema, targetSchema);
+  }
+  process.env.DATABASE_URL = 'file:./dev.db';
 }
 
 try {
   console.log('[Prisma Prepare] Generating Prisma Client...');
-  execSync('npx prisma generate', { stdio: 'inherit' });
+  execSync('npx prisma generate', { stdio: 'inherit', cwd: serverDir, env: { ...process.env } });
 
-  if (isPostgres && process.env.DATABASE_URL && !process.env.DATABASE_URL.includes('placeholder')) {
+  if (shouldActivatePostgres && process.env.DATABASE_URL && !process.env.DATABASE_URL.includes('placeholder')) {
     console.log('[Prisma Prepare] Syncing PostgreSQL schema with prisma db push...');
-    execSync('npx prisma db push --skip-generate --accept-data-loss', { stdio: 'inherit' });
+    execSync('npx prisma db push --skip-generate --accept-data-loss', { stdio: 'inherit', cwd: serverDir, env: { ...process.env } });
+  } else if (!shouldActivatePostgres) {
+    console.log('[Prisma Prepare] Syncing SQLite schema with prisma db push...');
+    execSync('npx prisma db push --skip-generate --accept-data-loss', { stdio: 'inherit', cwd: serverDir, env: { ...process.env } });
   }
 } catch (err) {
   console.warn('[Prisma Prepare] Schema sync warning (can be completed at runtime):', err.message);
 }
-

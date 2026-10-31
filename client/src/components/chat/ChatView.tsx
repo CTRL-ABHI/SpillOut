@@ -3,8 +3,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ActiveConversation, ChatMessage } from '@/types';
 import { EncryptionBadge } from './EncryptionBadge';
+import { DoodleAvatar } from '../doodles/avatars/DoodleAvatar';
 import { DoodleWallpaper } from '../doodles/DoodleWallpaper';
-import { Phone, Send, Lock, ArrowLeft, ShieldCheck } from 'lucide-react';
+import { Phone, Send, Lock, ArrowLeft, ShieldCheck, Clock, AlertTriangle } from 'lucide-react';
 import { sound } from '@/lib/sound';
 
 interface ChatViewProps {
@@ -75,16 +76,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </button>
           )}
 
-          <div className="relative">
-            <div className="w-9 h-9 rounded-full bg-neutral-100 border border-neutral-300 flex items-center justify-center font-mono font-bold text-neutral-900 text-xs">
-              {conversation.username.slice(0, 2).toUpperCase()}
-            </div>
-            <span
-              className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-white ${
-                conversation.isOnline ? 'bg-neutral-900' : 'bg-neutral-300'
-              }`}
-            />
-          </div>
+          <DoodleAvatar
+            avatarId={conversation.avatarId}
+            username={conversation.username}
+            size="sm"
+            isOnline={conversation.isOnline}
+            showPresence={true}
+          />
 
           <div>
             <div className="flex items-center gap-2">
@@ -97,7 +95,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               />
             </div>
             <p className="text-[11px] text-neutral-500 font-mono">
-              {conversation.isOnline ? 'Online • Ephemeral session' : 'Offline'}
+              {conversation.isOnline ? 'Online • Live session' : 'Offline • 24h encrypted queue active'}
             </p>
           </div>
         </div>
@@ -109,7 +107,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             onClick={() => onStartVoiceCall(conversation.username)}
             disabled={!conversation.isOnline}
             className="py-2 px-3.5 rounded-xl bg-neutral-100 hover:bg-neutral-900 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed text-neutral-900 border border-neutral-300 transition flex items-center gap-1.5 text-xs font-semibold shadow-sm"
-            title="Start Encrypted Voice Call"
+            title={conversation.isOnline ? 'Start Encrypted Voice Call' : 'Recipient must be online for voice calls'}
           >
             <Phone className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Encrypted Call</span>
@@ -117,10 +115,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       </div>
 
-      {/* Ephemeral Memory Notice Banner */}
+      {/* 24-Hour Retention Notice Banner */}
       <div className="px-4 py-1.5 bg-neutral-100/90 border-b border-neutral-200/80 flex items-center justify-center gap-2 text-[11px] text-neutral-600 font-mono z-10">
-        <Lock className="w-3 h-3 text-neutral-900" />
-        <span>E2EE Active. Messages exist in memory only. Cleared on tab close or logout.</span>
+        <Clock className="w-3 h-3 text-neutral-900 shrink-0" />
+        <span>E2EE Active. Encrypted on device. Messages are retained for 24 hours then permanently deleted.</span>
       </div>
 
       {/* Message Stream Area */}
@@ -132,10 +130,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </div>
             <div>
               <p className="text-sm font-bold text-neutral-900">
-                Encrypted Session Established
+                Encrypted Workspace Ready
               </p>
               <p className="text-xs text-neutral-500 max-w-xs mt-1">
-                Say hello to @{conversation.username}. No chat logs, history databases, or backups exist.
+                Say hello to @{conversation.username}. Messages are encrypted on your device and retained for 24 hours.
               </p>
             </div>
           </div>
@@ -149,9 +147,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 className={`max-w-[85%] sm:max-w-md px-4 py-2.5 rounded-2xl text-sm leading-relaxed break-words shadow-sm ${
                   msg.isSelf
                     ? 'bg-neutral-900 text-white rounded-br-sm'
-                    : 'bg-white text-neutral-900 border border-neutral-200 rounded-bl-sm'
+                    : msg.isDecrypted
+                    ? 'bg-white text-neutral-900 border border-neutral-200 rounded-bl-sm'
+                    : 'bg-neutral-100 text-neutral-600 border border-neutral-300 italic rounded-bl-sm'
                 }`}
               >
+                {!msg.isDecrypted && (
+                  <div className="flex items-center gap-1.5 mb-1 text-[11px] font-bold text-neutral-800 not-italic">
+                    <AlertTriangle className="w-3.5 h-3.5 text-neutral-900 shrink-0" />
+                    <span>Cross-Device Session Notice</span>
+                  </div>
+                )}
                 <p className="whitespace-pre-wrap select-text">{msg.text}</p>
               </div>
 
@@ -161,7 +167,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 </span>
                 {msg.isSelf && (
                   <span>
-                    • {msg.status === 'delivered' ? '✓ delivered' : msg.status === 'failed' ? '✗ failed' : '...'}
+                    •{' '}
+                    {msg.status === 'delivered' ? (
+                      <span className="text-neutral-900 font-bold font-mono">✓✓ delivered</span>
+                    ) : msg.status === 'sent' ? (
+                      <span className="text-neutral-600 font-medium font-mono">✓ sent</span>
+                    ) : msg.status === 'failed' ? (
+                      <span className="text-red-600 font-bold font-mono">✗ failed</span>
+                    ) : (
+                      <span className="text-neutral-400 italic">sending...</span>
+                    )}
                   </span>
                 )}
               </div>
@@ -182,9 +197,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
               placeholder={
                 conversation.isOnline
                   ? `Message @${conversation.username}... (Press Enter to send)`
-                  : `@${conversation.username} is offline`
+                  : `Message @${conversation.username}... (Queued for 24h delivery)`
               }
-              disabled={!conversation.isOnline || isSending}
+              disabled={isSending}
               rows={1}
               className="w-full px-4 py-3 bg-transparent text-sm text-neutral-900 placeholder-neutral-400 resize-none focus:outline-none max-h-32 min-h-[46px]"
               maxLength={2000}
@@ -198,7 +213,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
           <button
             type="submit"
-            disabled={!inputText.trim() || !conversation.isOnline || isSending}
+            disabled={!inputText.trim() || isSending}
             className="p-3 rounded-2xl bg-neutral-900 hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed text-white shadow-sm transition shrink-0 active:scale-95"
             title="Send Encrypted Message"
           >

@@ -124,6 +124,7 @@ export const api = {
     password: string[];
     confirmPassword: string[];
     gender: string;
+    avatarId?: string | null;
     publicKey?: string;
   }) => {
     const res = await request<{ message: string; user: User; token: string }>('/auth/register', {
@@ -164,7 +165,7 @@ export const api = {
   },
 
   getUserPublicKey: async (username: string) => {
-    return request<{ user: { username: string; canonicalUsername: string; publicKey: string | null; isOnline: boolean } }>(
+    return request<{ user: { username: string; canonicalUsername: string; gender?: string; avatarId?: string | null; publicKey: string | null; isOnline: boolean } }>(
       `/auth/user/${encodeURIComponent(username)}/public-key`
     );
   },
@@ -173,6 +174,38 @@ export const api = {
     return request<{ success: boolean }>('/auth/public-key', {
       method: 'POST',
       body: JSON.stringify({ publicKey }),
+    });
+  },
+
+  updateAvatar: async (avatarId: string | null) => {
+    return request<{ success: boolean; user: User }>('/account/avatar', {
+      method: 'POST',
+      body: JSON.stringify({ avatarId }),
+    });
+  },
+
+  getConversationMessages: async (username: string) => {
+    return request<{
+      conversationId: string;
+      messages: Array<{
+        id: string;
+        senderCanonical: string;
+        recipientCanonical: string;
+        ciphertext: string;
+        iv: string;
+        tag?: string;
+        senderEphemeralPublicKey: string;
+        createdAt: string;
+        expiresAt: string;
+        status: 'sending' | 'sent' | 'delivered' | 'failed';
+        deliveredAt?: string | null;
+      }>;
+    }>(`/messages/${encodeURIComponent(username)}`);
+  },
+
+  acknowledgeMessage: async (messageId: string) => {
+    return request<{ success: boolean }>(`/messages/${encodeURIComponent(messageId)}/ack`, {
+      method: 'POST',
     });
   },
 

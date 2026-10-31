@@ -10,7 +10,8 @@
     "start": "node dist/index.js",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
-    "test": "vitest run"
+    "test": "node scripts/prepare-prisma.cjs --test && vitest run",
+    "posttest": "node scripts/prepare-prisma.cjs"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
