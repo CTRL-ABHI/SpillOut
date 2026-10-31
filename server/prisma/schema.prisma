@@ -62,3 +62,16 @@ model Message {
   @@index([expiresAt])
   @@index([senderCanonical, createdAt])
 }
+
+model Conversation {
+  id                    String    @id
+  participant1Canonical String    @db.VarChar(10)
+  participant2Canonical String    @db.VarChar(10)
+  createdAt             DateTime  @default(now())
+  lastInteractionAt     DateTime  @default(now())
+
+  @@unique([participant1Canonical, participant2Canonical])
+  @@index([participant1Canonical, lastInteractionAt])
+  @@index([participant2Canonical, lastInteractionAt])
+  @@index([lastInteractionAt])
+}

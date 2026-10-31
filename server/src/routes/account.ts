@@ -4,6 +4,7 @@ import { authMiddleware, SESSION_COOKIE_NAME } from '../middleware/auth.middlewa
 import { getSessionCookieOptions } from './auth.js';
 import { presenceService } from '../services/presence.service.js';
 import { accountCleanupService } from '../services/account-cleanup.service.js';
+import { conversationService } from '../services/conversation.service.js';
 import { validateAvatarId } from '../utils/validation.js';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
@@ -81,12 +82,15 @@ accountRouter.delete('/me', authMiddleware, async (req: Request, res: Response):
     // 1. Evict active presence and WebSockets
     presenceService.disconnectUser(user.canonicalUsername, 'Account deleted by user');
 
-    // 2. Delete user and sessions
+    // 2. Clean up conversations
+    await conversationService.deleteUserConversations(user.canonicalUsername).catch(() => {});
+
+    // 3. Delete user and sessions
     await prisma.user.delete({
       where: { id: user.id },
     });
 
-    // 3. Clear cookie
+    // 4. Clear cookie
     res.clearCookie(SESSION_COOKIE_NAME, getSessionCookieOptions());
 
     logger.info(`User voluntarily deleted their account: ${user.canonicalUsername}`);

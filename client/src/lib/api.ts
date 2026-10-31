@@ -184,6 +184,41 @@ export const api = {
     });
   },
 
+  getConversations: async () => {
+    return request<{
+      conversations: Array<{
+        conversationId: string;
+        username: string;
+        canonicalUsername: string;
+        avatarId: string | null;
+        gender: string;
+        publicKey: string | null;
+        isOnline: boolean;
+        lastInteractionAt: string;
+        createdAt: string;
+      }>;
+    }>('/conversations');
+  },
+
+  startConversation: async (targetUsername: string) => {
+    return request<{
+      success: boolean;
+      conversation: {
+        conversationId: string;
+        username: string;
+        canonicalUsername: string;
+        avatarId: string | null;
+        gender: string;
+        publicKey: string | null;
+        isOnline: boolean;
+        lastInteractionAt: string;
+      };
+    }>('/conversations', {
+      method: 'POST',
+      body: JSON.stringify({ targetUsername }),
+    });
+  },
+
   getConversationMessages: async (username: string) => {
     return request<{
       conversationId: string;

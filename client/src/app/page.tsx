@@ -52,6 +52,12 @@ export default function SpilloutApp() {
   const [hoursUntilExpiration, setHoursUntilExpiration] = useState(168);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  const activeRecipientRef = React.useRef<string | null>(null);
+  activeRecipientRef.current = activeRecipient;
+
+  const currentUserRef = React.useRef<User | null>(null);
+  currentUserRef.current = currentUser;
+
   // Call state
   const [callSession, setCallSession] = useState<{
     peerUsername: string;
@@ -66,6 +72,35 @@ export default function SpilloutApp() {
     isIncoming: false,
   });
 
+  // Load persistent conversation relationships (persists even if messages expire)
+  const loadConversations = async () => {
+    try {
+      const res = await api.getConversations();
+      if (res.data?.conversations) {
+        setConversations((prev) => {
+          return res.data!.conversations.map((c) => {
+            const existing = prev.find((p) => p.canonicalUsername === c.canonicalUsername);
+            return {
+              username: c.username,
+              canonicalUsername: c.canonicalUsername,
+              gender: c.gender as any,
+              avatarId: c.avatarId,
+              publicKey: c.publicKey,
+              isOnline: c.isOnline,
+              unreadCount: existing?.unreadCount || 0,
+              lastMessageSnippet: existing?.lastMessageSnippet,
+              lastMessageTime:
+                existing?.lastMessageTime ||
+                new Date(c.lastInteractionAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            };
+          });
+        });
+      }
+    } catch (err) {
+      console.warn('Failed to load conversations', err);
+    }
+  };
+
   // 1. Initial Session Check
   useEffect(() => {
     async function initSession() {
@@ -77,6 +112,7 @@ export default function SpilloutApp() {
           const token = res.data.token || getApiSessionToken();
           socket.connect(token || undefined);
           loadAccountStatus();
+          loadConversations();
         }
       } catch (err) {
         console.error('Session initialization error', err);
@@ -121,49 +157,56 @@ export default function SpilloutApp() {
           socket.acknowledgeMessage(id);
         }
 
+        const currentCanonical = currentUserRef.current?.canonicalUsername.toLowerCase().trim() || '';
+        const isSelf = senderCanonical.toLowerCase().trim() === currentCanonical;
+        const targetConversationKey = isSelf
+          ? (payload.recipientCanonical || '').toLowerCase().trim()
+          : senderCanonical.toLowerCase().trim();
+
         const newMsg: ChatMessage = {
           id: msgId,
           sender: senderUsername,
-          recipient: currentUser.username,
+          recipient: isSelf ? payload.recipientCanonical : (currentUserRef.current?.username || ''),
           text: plaintext,
           timestamp: timestamp || new Date().toISOString(),
-          isSelf: false,
+          isSelf,
           status: 'delivered',
           isDecrypted,
         };
 
         setMessagesByRecipient((prev) => {
-          const list = prev[senderCanonical] || [];
+          const list = prev[targetConversationKey] || [];
           if (list.some((m) => m.id === msgId)) {
             return prev;
           }
           return {
             ...prev,
-            [senderCanonical]: [...list, newMsg],
+            [targetConversationKey]: [...list, newMsg],
           };
         });
 
         // Update or insert conversation in active memory
         setConversations((prev) => {
-          const index = prev.findIndex((c) => c.canonicalUsername === senderCanonical);
+          const index = prev.findIndex((c) => c.canonicalUsername === targetConversationKey);
           if (index !== -1) {
             const updated = [...prev];
-            updated[index] = {
+            const item = {
               ...updated[index],
-              lastMessageSnippet: plaintext.slice(0, 30),
+              lastMessageSnippet: isDecrypted ? plaintext.slice(0, 30) : '[Encrypted message]',
               lastMessageTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              unreadCount: activeRecipient === senderCanonical ? 0 : updated[index].unreadCount + 1,
+              unreadCount: activeRecipientRef.current === targetConversationKey ? 0 : updated[index].unreadCount + 1,
             };
-            return updated;
+            updated.splice(index, 1);
+            return [item, ...updated];
           } else {
             return [
               {
                 username: senderUsername,
-                canonicalUsername: senderCanonical,
+                canonicalUsername: targetConversationKey,
                 publicKey: senderEphemeralPublicKey,
                 isOnline: true,
-                unreadCount: activeRecipient === senderCanonical ? 0 : 1,
-                lastMessageSnippet: plaintext.slice(0, 30),
+                unreadCount: activeRecipientRef.current === targetConversationKey ? 0 : 1,
+                lastMessageSnippet: isDecrypted ? plaintext.slice(0, 30) : '[Encrypted message]',
                 lastMessageTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               },
               ...prev,
@@ -269,24 +312,29 @@ export default function SpilloutApp() {
     // I. Initialize WebRTC voice manager
     const cleanupVoice = webrtcVoice.init({
       onStateChange: (state, error) => {
-        setCallSession((prev) => ({
-          ...prev,
-          callState: state,
-          errorMessage: error,
-        }));
+        if (state === 'idle') {
+          setCallSession({
+            peerUsername: '',
+            callState: 'idle',
+            isIncoming: false,
+          });
+        } else {
+          setCallSession((prev) => ({
+            ...prev,
+            callState: state,
+            errorMessage: error,
+          }));
+        }
       },
       onRemoteStream: () => {},
       onIncomingCall: (fromUsername, callId) => {
-        const conv = conversations.find(
-          (c) => c.canonicalUsername.toLowerCase().trim() === fromUsername.toLowerCase().trim()
-        );
-        setCallSession({
+        setCallSession((prev) => ({
+          ...prev,
           peerUsername: fromUsername,
-          peerAvatarId: conv?.avatarId,
           callState: 'ringing-incoming',
           isIncoming: true,
           callId,
-        });
+        }));
       },
     });
 
@@ -301,7 +349,7 @@ export default function SpilloutApp() {
       unsubFailed();
       cleanupVoice();
     };
-  }, [currentUser, activeRecipient, conversations]);
+  }, [currentUser?.id]);
 
   // Handle successful login or registration
   const handleAuthSuccess = async (user: User, token: string) => {
@@ -309,6 +357,7 @@ export default function SpilloutApp() {
     await getOrCreateIdentityKeyPair(user.canonicalUsername);
     socket.connect(token);
     loadAccountStatus();
+    loadConversations();
   };
 
   // Handle Logout (24h messages remain securely decryptable on this device)
@@ -374,7 +423,7 @@ export default function SpilloutApp() {
           const isSelf = m.senderCanonical === currentUser?.canonicalUsername.toLowerCase().trim();
           const decryptionKey = isSelf ? peerPublicKey : m.senderEphemeralPublicKey;
 
-          let text = '[Encrypted message]';
+          let text = '[Encrypted message - Key unavailable on this device]';
           let isDecrypted = false;
 
           if (decryptionKey) {
@@ -401,10 +450,20 @@ export default function SpilloutApp() {
           }
         }
 
-        setMessagesByRecipient((prev) => ({
-          ...prev,
-          [canonicalUsername]: decryptedList,
-        }));
+        setMessagesByRecipient((prev) => {
+          const existing = prev[canonicalUsername] || [];
+          const sendingOnly = existing.filter((m) => m.status === 'sending');
+          const combined = [...decryptedList];
+          for (const s of sendingOnly) {
+            if (!combined.some((m) => m.id === s.id)) {
+              combined.push(s);
+            }
+          }
+          return {
+            ...prev,
+            [canonicalUsername]: combined,
+          };
+        });
       }
     } catch (err) {
       console.warn('Could not fetch conversation history', err);
@@ -707,7 +766,9 @@ export default function SpilloutApp() {
         isOpen={isSearchOpen}
         onClose={() => setIsSearchOpen(false)}
         currentUsername={currentUser.username}
-        onStartConversation={(newConv) => {
+        onStartConversation={async (newConv) => {
+          // Persist conversation relationship on backend
+          await api.startConversation(newConv.username).catch(() => {});
           setConversations((prev) => {
             const exists = prev.find((c) => c.canonicalUsername === newConv.canonicalUsername);
             return exists ? prev : [newConv, ...prev];
@@ -731,10 +792,15 @@ export default function SpilloutApp() {
         onDecline={() => {
           if (callSession.callId) {
             webrtcVoice.declineCall(callSession.peerUsername, callSession.callId);
+          } else {
+            webrtcVoice.dismissCall();
           }
         }}
         onEndCall={() => {
           webrtcVoice.endCall();
+        }}
+        onDismiss={() => {
+          webrtcVoice.dismissCall();
         }}
       />
     </div>

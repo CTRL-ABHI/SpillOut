@@ -5,6 +5,8 @@ import { SESSION_COOKIE_NAME } from '../middleware/auth.middleware.js';
 import { presenceService, ConnectedClient } from './presence.service.js';
 import { accountCleanupService } from './account-cleanup.service.js';
 import { messageService } from './message.service.js';
+import { conversationService } from './conversation.service.js';
+import { callService } from './call.service.js';
 import { logger } from '../utils/logger.js';
 
 interface WSMessage {
@@ -285,6 +287,9 @@ export function setupWebSocketServer(wss: WebSocketServer): void {
             senderEphemeralPublicKey: payload.senderEphemeralPublicKey,
           });
 
+          // Touch persistent conversation relationship (independent of message expiration)
+          await conversationService.touchConversation(currentClient.canonicalUsername, recipientCanonical);
+
           // Confirm to sender that message is accepted and stored (status: 'sent')
           ws.send(
             JSON.stringify({
@@ -359,10 +364,11 @@ export function setupWebSocketServer(wss: WebSocketServer): void {
           return;
         }
 
-        // 6. WebRTC Signaling for Encrypted Voice Calls
+        // 6. WebRTC Signaling for Encrypted Voice Calls (Backed by Authoritative Call Registry)
         if (type === 'webrtc-signal') {
-          const signalType = payload?.signalType; // call-invite, call-accept, call-decline, call-busy, call-end, webrtc-offer, webrtc-answer, webrtc-ice
+          const signalType = payload?.signalType; // call-invite, call-accept, call-decline, call-cancel, call-busy, call-end, webrtc-offer, webrtc-answer, webrtc-ice
           const target = payload?.targetUsername?.toLowerCase()?.trim();
+          const callId = payload?.callId;
 
           if (!target || !signalType) {
             ws.send(JSON.stringify({ type: 'error', error: 'Invalid signaling payload' }));
@@ -370,17 +376,85 @@ export function setupWebSocketServer(wss: WebSocketServer): void {
           }
 
           if (!presenceService.isOnline(target)) {
+            if (callId) {
+              callService.releaseCall(callId, 'Recipient offline');
+            }
             ws.send(
               JSON.stringify({
                 type: 'call-failed',
                 payload: {
                   target,
-                  callId: payload?.callId,
+                  callId,
                   reason: 'User is currently offline',
                 },
               })
             );
             return;
+          }
+
+          // Authoritative call state machine validation
+          if (signalType === 'call-invite') {
+            const recipientUser = await prisma.user.findUnique({
+              where: { canonicalUsername: target },
+              select: { username: true },
+            });
+
+            const effectiveCallId = callId || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            const reservation = callService.reserveCall(
+              effectiveCallId,
+              currentClient.canonicalUsername,
+              currentClient.username,
+              target,
+              recipientUser?.username || target,
+              (timeoutSession) => {
+                const timeoutPayload = JSON.stringify({
+                  type: 'call-failed',
+                  payload: {
+                    callId: timeoutSession.callId,
+                    reason: 'No answer from recipient (call timed out)',
+                  },
+                });
+                for (const s of [
+                  ...presenceService.getSockets(timeoutSession.callerCanonical),
+                  ...presenceService.getSockets(timeoutSession.recipientCanonical),
+                ]) {
+                  if (s.readyState === WebSocket.OPEN) s.send(timeoutPayload);
+                }
+              }
+            );
+
+            if (!reservation.success) {
+              ws.send(
+                JSON.stringify({
+                  type: 'call-failed',
+                  payload: {
+                    target,
+                    callId: effectiveCallId,
+                    reason: reservation.reason || 'User is on another call',
+                  },
+                })
+              );
+              return;
+            }
+
+            // Also record conversation relationship
+            await conversationService.touchConversation(currentClient.canonicalUsername, target);
+          } else if (signalType === 'call-accept') {
+            if (callId) {
+              callService.acceptCall(callId, currentClient.canonicalUsername);
+            }
+          } else if (signalType === 'call-decline' || signalType === 'call-busy') {
+            if (callId) {
+              callService.releaseCall(callId, `Call ${signalType} by recipient`);
+            }
+          } else if (signalType === 'call-cancel') {
+            if (callId) {
+              callService.releaseCall(callId, 'Call cancelled by caller');
+            }
+          } else if (signalType === 'call-end') {
+            if (callId) {
+              callService.releaseCall(callId, 'Call ended by participant');
+            }
           }
 
           const targetSockets = presenceService.getSockets(target);
@@ -413,12 +487,46 @@ export function setupWebSocketServer(wss: WebSocketServer): void {
     });
 
     ws.on('close', () => {
-      presenceService.unregister(ws);
+      const client = presenceService.unregister(ws);
+      if (client && !presenceService.isOnline(client.canonicalUsername)) {
+        const disconnected = callService.handleUserDisconnected(client.canonicalUsername);
+        if (disconnected && disconnected.peerCanonical) {
+          const peerSockets = presenceService.getSockets(disconnected.peerCanonical);
+          const endNotice = JSON.stringify({
+            type: 'webrtc-signal',
+            payload: {
+              signalType: 'call-end',
+              callId: disconnected.callId,
+              reason: 'Peer disconnected',
+            },
+          });
+          for (const s of peerSockets) {
+            if (s.readyState === WebSocket.OPEN) s.send(endNotice);
+          }
+        }
+      }
     });
 
     ws.on('error', (err: unknown) => {
       logger.error('WebSocket connection error', err);
-      presenceService.unregister(ws);
+      const client = presenceService.unregister(ws);
+      if (client && !presenceService.isOnline(client.canonicalUsername)) {
+        const disconnected = callService.handleUserDisconnected(client.canonicalUsername);
+        if (disconnected && disconnected.peerCanonical) {
+          const peerSockets = presenceService.getSockets(disconnected.peerCanonical);
+          const endNotice = JSON.stringify({
+            type: 'webrtc-signal',
+            payload: {
+              signalType: 'call-end',
+              callId: disconnected.callId,
+              reason: 'Peer connection error',
+            },
+          });
+          for (const s of peerSockets) {
+            if (s.readyState === WebSocket.OPEN) s.send(endNotice);
+          }
+        }
+      }
     });
   });
 }

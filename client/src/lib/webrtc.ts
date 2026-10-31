@@ -53,7 +53,6 @@ export class WebRTCVoiceManager {
 
   public init(events: CallEvents): () => void {
     this.events = events;
-
     this.ensureAudioElement();
 
     // Subscribe to WebSocket WebRTC signals
@@ -62,8 +61,13 @@ export class WebRTCVoiceManager {
     });
 
     const unsubscribeFailed = socket.on('call-failed', (payload: any) => {
-      this.cleanup();
-      this.setState('ended', payload?.reason || 'User is unavailable');
+      // If error belongs to current call or if initiating
+      if (!payload?.callId || payload.callId === this.currentCallId) {
+        sound.stopRingtone();
+        sound.playCallEnd();
+        this.cleanup();
+        this.setState('ended', payload?.reason || 'User is unavailable');
+      }
     });
 
     return () => {
@@ -81,8 +85,13 @@ export class WebRTCVoiceManager {
       el = document.createElement('audio');
       el.id = 'spillout-remote-audio';
       el.autoplay = true;
+      el.muted = false;
+      el.volume = 1.0;
       el.style.display = 'none';
       document.body.appendChild(el);
+    } else {
+      el.muted = false;
+      el.volume = 1.0;
     }
     this.remoteAudioElement = el;
   }
@@ -94,12 +103,27 @@ export class WebRTCVoiceManager {
     }
   }
 
+  public getState(): CallState {
+    return this.currentState;
+  }
+
+  public getCallId(): string | null {
+    return this.currentCallId;
+  }
+
+  public getPeer(): string | null {
+    return this.currentPeer;
+  }
+
   /**
    * Acquire local microphone stream with speech optimization filters
    */
   private async getMicrophone(): Promise<MediaStream> {
     if (this.localStream) {
-      return this.localStream;
+      const activeTracks = this.localStream.getAudioTracks().filter((t) => t.readyState === 'live');
+      if (activeTracks.length > 0) {
+        return this.localStream;
+      }
     }
 
     try {
@@ -145,11 +169,12 @@ export class WebRTCVoiceManager {
         if (this.currentState === 'ringing-outgoing') {
           sound.stopRingtone();
           sound.playCallEnd();
-          this.endCall();
+          this.cleanup();
           this.setState('ended', 'No answer from recipient');
         }
       }, 45000);
     } catch (err: any) {
+      sound.stopRingtone();
       this.cleanup();
       this.setState('ended', err.message);
     }
@@ -169,7 +194,7 @@ export class WebRTCVoiceManager {
       const stream = await this.getMicrophone();
       this.setupPeerConnection();
 
-      // Add local audio tracks to peer connection
+      // Add local audio tracks to peer connection ONCE
       for (const track of stream.getAudioTracks()) {
         this.pc?.addTrack(track, stream);
       }
@@ -190,8 +215,21 @@ export class WebRTCVoiceManager {
     this.clearRingTimeout();
     sound.stopRingtone();
     socket.sendSignal(callerUsername, 'call-decline', { callId });
-    this.cleanup();
-    this.setState('idle');
+    this.dismissCall();
+  }
+
+  /**
+   * Cancel an outgoing call before the recipient answers
+   */
+  public cancelCall(): void {
+    this.clearRingTimeout();
+    sound.stopRingtone();
+    if (this.currentPeer && this.currentCallId) {
+      socket.sendSignal(this.currentPeer, 'call-cancel', {
+        callId: this.currentCallId,
+      });
+    }
+    this.dismissCall();
   }
 
   /**
@@ -199,6 +237,7 @@ export class WebRTCVoiceManager {
    */
   public endCall(): void {
     this.clearRingTimeout();
+    sound.stopRingtone();
     if (this.currentPeer && this.currentCallId) {
       socket.sendSignal(this.currentPeer, 'call-end', {
         callId: this.currentCallId,
@@ -206,7 +245,16 @@ export class WebRTCVoiceManager {
     }
     sound.playCallEnd();
     this.cleanup();
-    this.setState('ended');
+    this.setState('ended', 'Call ended');
+  }
+
+  /**
+   * Centralized call dismissal:
+   * Closes the call screen, resets state to 'idle', and releases all media resources.
+   */
+  public dismissCall(): void {
+    this.cleanup();
+    this.setState('idle');
   }
 
   /**
@@ -224,8 +272,13 @@ export class WebRTCVoiceManager {
   private setupPeerConnection(): void {
     if (this.pc) {
       try {
+        this.pc.onicecandidate = null;
+        this.pc.ontrack = null;
+        this.pc.onconnectionstatechange = null;
+        this.pc.oniceconnectionstatechange = null;
         this.pc.close();
       } catch {}
+      this.pc = null;
     }
 
     this.pendingCandidates = [];
@@ -248,8 +301,19 @@ export class WebRTCVoiceManager {
         const remoteStream = event.streams[0];
         if (this.remoteAudioElement) {
           this.remoteAudioElement.srcObject = remoteStream;
+          this.remoteAudioElement.muted = false;
+          this.remoteAudioElement.volume = 1.0;
           this.remoteAudioElement.play().catch((playErr) => {
-            console.warn('Audio auto-play caught:', playErr);
+            console.warn('Audio auto-play caught, registering click resume fallback:', playErr);
+            const resumePlay = () => {
+              if (this.remoteAudioElement && this.remoteAudioElement.srcObject) {
+                this.remoteAudioElement.play().catch(() => {});
+              }
+              window.removeEventListener('click', resumePlay);
+              window.removeEventListener('keydown', resumePlay);
+            };
+            window.addEventListener('click', resumePlay, { once: true });
+            window.addEventListener('keydown', resumePlay, { once: true });
           });
         }
         if (this.events) {
@@ -267,8 +331,9 @@ export class WebRTCVoiceManager {
         this.setState('connected');
       } else if (state === 'failed') {
         this.clearRingTimeout();
+        sound.stopRingtone();
         this.cleanup();
-        this.setState('ended', 'Direct audio connection failed. Peer network may require TURN relay.');
+        this.setState('ended', 'Audio connection failed. Peer network may require TURN relay.');
       } else if (state === 'disconnected' || state === 'closed') {
         if (this.currentState === 'connected') {
           this.endCall();
@@ -285,6 +350,7 @@ export class WebRTCVoiceManager {
         this.setState('connected');
       } else if (iceState === 'failed') {
         this.clearRingTimeout();
+        sound.stopRingtone();
         this.cleanup();
         this.setState('ended', 'ICE connectivity check failed.');
       }
@@ -309,10 +375,15 @@ export class WebRTCVoiceManager {
   private async handleSignal(payload: any): Promise<void> {
     const { signalType, fromUsername, callId } = payload;
 
+    // Reject stale signals from older calls
+    if (signalType !== 'call-invite' && callId && this.currentCallId && callId !== this.currentCallId) {
+      return;
+    }
+
     switch (signalType) {
       case 'call-invite': {
         if (this.currentState !== 'idle') {
-          // Busy with another call
+          // Busy with another call - notify caller immediately with incoming callId
           socket.sendSignal(fromUsername, 'call-busy', { callId });
           return;
         }
@@ -345,7 +416,7 @@ export class WebRTCVoiceManager {
           await this.pc!.setLocalDescription(offer);
 
           socket.sendSignal(fromUsername, 'webrtc-offer', {
-            callId,
+            callId: this.currentCallId,
             sdp: offer,
           });
         }
@@ -356,13 +427,10 @@ export class WebRTCVoiceManager {
         if (payload.sdp) {
           if (!this.pc) {
             this.setupPeerConnection();
-          }
-
-          const activePc = this.pc;
-          if (activePc) {
             const stream = await this.getMicrophone();
+            const peerConn = this.pc as RTCPeerConnection | null;
             for (const track of stream.getAudioTracks()) {
-              activePc.addTrack(track, stream);
+              peerConn?.addTrack(track, stream);
             }
           }
 
@@ -373,7 +441,7 @@ export class WebRTCVoiceManager {
           await this.pc!.setLocalDescription(answer);
 
           socket.sendSignal(fromUsername, 'webrtc-answer', {
-            callId,
+            callId: this.currentCallId,
             sdp: answer,
           });
         }
@@ -413,6 +481,15 @@ export class WebRTCVoiceManager {
         break;
       }
 
+      case 'call-cancel': {
+        this.clearRingTimeout();
+        sound.stopRingtone();
+        sound.playCallEnd();
+        this.cleanup();
+        this.setState('ended', 'Call was cancelled by caller');
+        break;
+      }
+
       case 'call-busy': {
         this.clearRingTimeout();
         sound.stopRingtone();
@@ -440,6 +517,10 @@ export class WebRTCVoiceManager {
     }
   }
 
+  /**
+   * Clean up all media, connection, and timer resources.
+   * Does NOT touch state; allows callers to transition to 'ended' or 'idle'.
+   */
   public cleanup(): void {
     this.clearRingTimeout();
     sound.stopRingtone();
@@ -447,6 +528,10 @@ export class WebRTCVoiceManager {
 
     if (this.pc) {
       try {
+        this.pc.onicecandidate = null;
+        this.pc.ontrack = null;
+        this.pc.onconnectionstatechange = null;
+        this.pc.oniceconnectionstatechange = null;
         this.pc.close();
       } catch {}
       this.pc = null;

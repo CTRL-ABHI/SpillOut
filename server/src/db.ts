@@ -113,6 +113,16 @@ export async function ensureDatabase(): Promise<void> {
           );
         `);
 
+        await prisma.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "Conversation" (
+            "id" TEXT PRIMARY KEY,
+            "participant1Canonical" VARCHAR(10) NOT NULL,
+            "participant2Canonical" VARCHAR(10) NOT NULL,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "lastInteractionAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "User_canonicalUsername_idx" ON "User"("canonicalUsername");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "User_lastActivityAt_idx" ON "User"("lastActivityAt");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Session_token_idx" ON "Session"("token");`).catch(() => {});
@@ -121,6 +131,10 @@ export async function ensureDatabase(): Promise<void> {
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Message_conversationId_expiresAt_idx" ON "Message"("conversationId", "expiresAt");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Message_expiresAt_idx" ON "Message"("expiresAt");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Message_senderCanonical_createdAt_idx" ON "Message"("senderCanonical", "createdAt");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "Conversation_participants_key" ON "Conversation"("participant1Canonical", "participant2Canonical");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Conversation_participant1Canonical_lastInteractionAt_idx" ON "Conversation"("participant1Canonical", "lastInteractionAt");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Conversation_participant2Canonical_lastInteractionAt_idx" ON "Conversation"("participant2Canonical", "lastInteractionAt");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Conversation_lastInteractionAt_idx" ON "Conversation"("lastInteractionAt");`).catch(() => {});
       } else {
         await prisma.$executeRawUnsafe(`
           CREATE TABLE IF NOT EXISTS "User" (
@@ -175,6 +189,16 @@ export async function ensureDatabase(): Promise<void> {
           );
         `);
 
+        await prisma.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS "Conversation" (
+            "id" TEXT PRIMARY KEY,
+            "participant1Canonical" TEXT NOT NULL,
+            "participant2Canonical" TEXT NOT NULL,
+            "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "lastInteractionAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+
         await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "User_canonicalUsername_key" ON "User"("canonicalUsername");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "User_canonicalUsername_idx" ON "User"("canonicalUsername");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "User_lastActivityAt_idx" ON "User"("lastActivityAt");`).catch(() => {});
@@ -185,6 +209,10 @@ export async function ensureDatabase(): Promise<void> {
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Message_conversationId_expiresAt_idx" ON "Message"("conversationId", "expiresAt");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Message_expiresAt_idx" ON "Message"("expiresAt");`).catch(() => {});
         await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Message_senderCanonical_createdAt_idx" ON "Message"("senderCanonical", "createdAt");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "Conversation_participants_key" ON "Conversation"("participant1Canonical", "participant2Canonical");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Conversation_participant1Canonical_lastInteractionAt_idx" ON "Conversation"("participant1Canonical", "lastInteractionAt");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Conversation_participant2Canonical_lastInteractionAt_idx" ON "Conversation"("participant2Canonical", "lastInteractionAt");`).catch(() => {});
+        await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Conversation_lastInteractionAt_idx" ON "Conversation"("lastInteractionAt");`).catch(() => {});
       }
     } catch (err: any) {
       console.warn('[Database] Auto-migration check:', err?.message || err);

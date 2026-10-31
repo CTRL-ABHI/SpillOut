@@ -6,6 +6,8 @@ import { createApp } from '../src/app.js';
 import { setupWebSocketServer } from '../src/services/websocket.service.js';
 import { presenceService } from '../src/services/presence.service.js';
 import { messageService } from '../src/services/message.service.js';
+import { conversationService } from '../src/services/conversation.service.js';
+import { callService } from '../src/services/call.service.js';
 import { prisma } from '../src/db.js';
 import crypto from 'crypto';
 
@@ -22,6 +24,7 @@ describe('SPILLOUT Reliable E2EE Messaging, 24h Retention & Acknowledgements Tes
 
   beforeAll(async () => {
     await prisma.message.deleteMany({});
+    await prisma.conversation.deleteMany({});
     await prisma.session.deleteMany({});
     await prisma.user.deleteMany({});
 
@@ -92,6 +95,7 @@ describe('SPILLOUT Reliable E2EE Messaging, 24h Retention & Acknowledgements Tes
     }
     try {
       await prisma.message.deleteMany({});
+      await prisma.conversation.deleteMany({});
       await prisma.session.deleteMany({});
       await prisma.user.deleteMany({});
       await prisma.$disconnect();
@@ -309,5 +313,97 @@ describe('SPILLOUT Reliable E2EE Messaging, 24h Retention & Acknowledgements Tes
       where: { id: expiredId },
     });
     expect(checkDb).toBeNull();
+  });
+
+  it('maintains persistent conversation metadata in GET /api/conversations even after messages expire', async () => {
+    // 1. Explicitly touch/create conversation relationship
+    await conversationService.touchConversation('alice01', 'bob02');
+
+    // 2. Fetch conversations for Alice
+    const res = await request(app)
+      .get('/api/conversations')
+      .set('Authorization', `Bearer ${user1Token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.conversations).toBeDefined();
+    expect(Array.isArray(res.body.conversations)).toBe(true);
+    expect(res.body.conversations.length).toBeGreaterThan(0);
+
+    const bobEntry = res.body.conversations.find((c: any) => c.canonicalUsername === 'bob02');
+    expect(bobEntry).toBeDefined();
+    expect(bobEntry.username).toBe('Bob02');
+    expect(bobEntry.avatarId).toBe('avatar_02');
+
+    // 3. Purge all messages in database to simulate total 24h message expiration
+    await prisma.message.deleteMany({});
+
+    // 4. Verify conversation STILL exists in conversation list
+    const resAfterExpiry = await request(app)
+      .get('/api/conversations')
+      .set('Authorization', `Bearer ${user1Token}`);
+
+    expect(resAfterExpiry.status).toBe(200);
+    const bobStillExists = resAfterExpiry.body.conversations.find((c: any) => c.canonicalUsername === 'bob02');
+    expect(bobStillExists).toBeDefined();
+  });
+
+  it('manages authoritative voice call state, rejects calls with "User is on another call", and frees users upon end', async () => {
+    const callId1 = `test_call_${Date.now()}_1`;
+
+    // 1. Alice reserves a call to Bob
+    const res1 = callService.reserveCall(
+      callId1,
+      'alice01',
+      'Alice01',
+      'bob02',
+      'Bob02',
+      () => {}
+    );
+    expect(res1.success).toBe(true);
+    expect(callService.isUserBusy('bob02')).toBe(true);
+    expect(callService.isUserBusy('alice01')).toBe(true);
+
+    // 2. Third user tries to call Bob while Bob is busy
+    const callId2 = `test_call_${Date.now()}_2`;
+    const res2 = callService.reserveCall(
+      callId2,
+      'charlie03',
+      'Charlie03',
+      'bob02',
+      'Bob02',
+      () => {}
+    );
+    expect(res2.success).toBe(false);
+    expect(res2.reason).toBe('User is on another call');
+
+    // 3. Bob accepts Alice's call
+    const accepted = callService.acceptCall(callId1, 'bob02');
+    expect(accepted).not.toBeNull();
+    expect(accepted?.status).toBe('connected');
+
+    // 4. Call ends
+    const released = callService.releaseCall(callId1, 'Call ended');
+    expect(released).not.toBeNull();
+    expect(released?.status).toBe('ended');
+
+    // 5. Verify both Alice and Bob are immediately freed
+    expect(callService.isUserBusy('bob02')).toBe(false);
+    expect(callService.isUserBusy('alice01')).toBe(false);
+
+    // 6. Charlie can now successfully call Bob
+    const res3 = callService.reserveCall(
+      callId2,
+      'charlie03',
+      'Charlie03',
+      'bob02',
+      'Bob02',
+      () => {}
+    );
+    expect(res3.success).toBe(true);
+    expect(callService.isUserBusy('bob02')).toBe(true);
+
+    // Clean up
+    callService.releaseCall(callId2, 'Test cleanup');
+    expect(callService.isUserBusy('bob02')).toBe(false);
   });
 });

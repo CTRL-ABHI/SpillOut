@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { CallState } from '@/types';
 import { webrtcVoice } from '@/lib/webrtc';
 import { DoodleAvatar } from '../doodles/avatars/DoodleAvatar';
-import { Phone, PhoneOff, Mic, MicOff, ShieldCheck, AlertCircle } from 'lucide-react';
+import { Phone, PhoneOff, Mic, MicOff, ShieldCheck, AlertCircle, X } from 'lucide-react';
 import { VoiceWaveDoodle } from '../doodles/VoiceWaveDoodle';
 
 interface VoiceCallModalProps {
@@ -15,6 +15,7 @@ interface VoiceCallModalProps {
   onAccept?: () => void;
   onDecline?: () => void;
   onEndCall: () => void;
+  onDismiss?: () => void;
   errorMessage?: string;
 }
 
@@ -26,6 +27,7 @@ export const VoiceCallModal: React.FC<VoiceCallModalProps> = ({
   onAccept,
   onDecline,
   onEndCall,
+  onDismiss,
   errorMessage,
 }) => {
   const [duration, setDuration] = useState(0);
@@ -62,7 +64,18 @@ export const VoiceCallModal: React.FC<VoiceCallModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-fade-in select-none text-neutral-900">
-      <div className="w-full max-w-sm p-6 sm:p-8 rounded-3xl bg-white border border-neutral-300 shadow-modal text-center space-y-5 animate-pop-in">
+      <div className="w-full max-w-sm p-6 sm:p-8 rounded-3xl bg-white border border-neutral-300 shadow-modal text-center space-y-5 animate-pop-in relative">
+        {/* Top-Right Dismiss Cross when Ended */}
+        {callState === 'ended' && (
+          <button
+            type="button"
+            onClick={onDismiss || onEndCall}
+            className="absolute top-4 right-4 p-1.5 rounded-full text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition"
+            title="Dismiss Call Screen"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
         {/* Peer Avatar & Concentric Hand-drawn Pulse */}
         <div className="relative w-24 h-24 mx-auto flex items-center justify-center">
           {callState === 'connected' && (
@@ -172,8 +185,8 @@ export const VoiceCallModal: React.FC<VoiceCallModalProps> = ({
           {callState === 'ended' && (
             <button
               type="button"
-              onClick={onEndCall}
-              className="py-2.5 px-6 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold transition shadow-sm"
+              onClick={onDismiss || onEndCall}
+              className="py-2.5 px-6 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold transition shadow-sm active:scale-95"
             >
               Dismiss
             </button>

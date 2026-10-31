@@ -68,7 +68,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
       {/* Conversation List */}
       <div className="flex-1 overflow-y-auto p-2 sm:p-3 space-y-1">
         <div className="px-3 py-2 text-[10px] uppercase tracking-wider font-mono text-neutral-400 font-bold flex items-center justify-between">
-          <span>Active 24h Conversations</span>
+          <span>Conversations</span>
           <span className="px-1.5 py-0.2 rounded bg-neutral-100 text-neutral-700">
             {conversations.length}
           </span>
@@ -80,9 +80,9 @@ export const ConversationList: React.FC<ConversationListProps> = ({
               <MessageSquare className="w-5 h-5" />
             </div>
             <div>
-              <p className="font-semibold text-neutral-700">No active conversations</p>
+              <p className="font-semibold text-neutral-700">No conversations yet</p>
               <p className="text-[11px] text-neutral-400 mt-1">
-                Encrypted messages are retained for 24 hours. Messages older than 24 hours are permanently deleted.
+                You have not started any conversations yet. Your conversations will be remembered here even after 24h messages expire.
               </p>
             </div>
             <button

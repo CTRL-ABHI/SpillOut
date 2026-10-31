@@ -31,36 +31,33 @@ export interface ValidationResult<T = void> {
   data?: T;
 }
 
+export interface UsernameValidationData {
+  raw: string;
+  canonical: string;
+}
+
 /**
- * Validates a username according to SPILLOUT rules:
- * - Alphanumeric characters only (A-Z, a-z, 0-9)
- * - Length between 3 and 10 characters
- * - No special characters, spaces, punctuation, or emojis
+ * Validates account username:
+ * - 3 to 10 characters
+ * - Alphanumeric only (letters and digits, no spaces or symbols)
  */
-export function validateUsername(raw: unknown): ValidationResult<{ raw: string; canonical: string }> {
+export function validateUsername(raw: unknown): ValidationResult<UsernameValidationData> {
   if (typeof raw !== 'string') {
     return { isValid: false, error: 'Username must be a string' };
   }
 
   const trimmed = raw.trim();
-  if (trimmed.length < MIN_USERNAME_LENGTH) {
+  if (trimmed.length < MIN_USERNAME_LENGTH || trimmed.length > MAX_USERNAME_LENGTH) {
     return {
       isValid: false,
-      error: `Username must be at least ${MIN_USERNAME_LENGTH} characters`,
-    };
-  }
-
-  if (trimmed.length > MAX_USERNAME_LENGTH) {
-    return {
-      isValid: false,
-      error: `Username cannot exceed ${MAX_USERNAME_LENGTH} characters`,
+      error: `Username must be between ${MIN_USERNAME_LENGTH} and ${MAX_USERNAME_LENGTH} characters`,
     };
   }
 
   if (!USERNAME_REGEX.test(trimmed)) {
     return {
       isValid: false,
-      error: 'Username may only contain letters (A-Z, a-z) and digits (0-9)',
+      error: 'Username may only contain letters and numbers (no spaces or special characters)',
     };
   }
 

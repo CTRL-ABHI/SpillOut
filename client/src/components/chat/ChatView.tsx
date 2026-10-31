@@ -130,10 +130,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </div>
             <div>
               <p className="text-sm font-bold text-neutral-900">
-                Encrypted Workspace Ready
+                No Recent Messages
               </p>
               <p className="text-xs text-neutral-500 max-w-xs mt-1">
-                Say hello to @{conversation.username}. Messages are encrypted on your device and retained for 24 hours.
+                No messages in the last 24 hours. Messages older than 24 hours have expired and were permanently deleted. Send a message to start chatting with @{conversation.username}!
               </p>
             </div>
           </div>

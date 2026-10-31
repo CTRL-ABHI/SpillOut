@@ -2,6 +2,7 @@ import { prisma } from '../db.js';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { presenceService } from './presence.service.js';
+import { conversationService } from './conversation.service.js';
 
 /**
  * 7-Day Inactivity Deletion Service
@@ -62,6 +63,9 @@ export class AccountCleanupService {
         try {
           // Terminate active presence and connections immediately
           presenceService.disconnectUser(user.canonicalUsername, 'Account permanently expired after 7 days of inactivity');
+
+          // Clean up user conversation relationships
+          await conversationService.deleteUserConversations(user.canonicalUsername).catch(() => {});
 
           // Delete user (Prisma cascade deletes associated Session records)
           await prisma.user.delete({

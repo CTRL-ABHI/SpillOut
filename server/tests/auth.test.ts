@@ -8,12 +8,16 @@ const app = createApp();
 
 describe('SPILLOUT Authentication & Inactivity Lifecycle Integration Tests', () => {
   beforeEach(async () => {
-    // Clear sessions and users before each test
+    // Clear sessions, messages, conversations, and users before each test
+    await prisma.message.deleteMany({});
+    await prisma.conversation.deleteMany({});
     await prisma.session.deleteMany({});
     await prisma.user.deleteMany({});
   });
 
   afterAll(async () => {
+    await prisma.message.deleteMany({});
+    await prisma.conversation.deleteMany({});
     await prisma.session.deleteMany({});
     await prisma.user.deleteMany({});
     await prisma.$disconnect();
